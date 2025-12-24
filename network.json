@@ -1,0 +1,28 @@
+{
+  "eco-prod": {
+    "rpc_url": "https://api.elastos.cc/eco",
+    "loan_contractaddress": "0xB932A221855ca54d6979Ff71ED4Cb0A8C4fb3797",
+    "issuer_contractaddress": "0xD76d27c27bba3a84F32C96Cf5d8Eb81c130c4574",
+    "stable_coin_contractaddress": "0x45ec25a63e010BFb84629242f40DDa187f83833E",
+    "staking_factory_address": "0xb2867289f4cbbE2B1bf72e0839a64bA59105F76C",
+    "stakingToken1_decimals": 18,
+    "stakingToken2_decimals": 18,
+    "multicall3": "0xe60961306fDcC7Bcb1beEEbfD9c7FC4420Fe37Eb",
+    "issuer_btc_address": "1AEXQ6Gtu61bXPZnuQPXtJhXoEkTXCfYfH",
+    "start_block": 1526816,
+    "batch_size": 50000
+  },
+  "pgp-prod": {
+    "rpc_url": "https://api.elastos.io/pgp",
+    "loan_contractaddress": "0x5cD194C9d34e5B9b7A0E5cBC64C93c1c9277891e",
+    "issuer_contractaddress": "0x91cf47c5d2b44Da124d4B54E9207aE6FB63D5Fa7",
+    "stable_coin_contractaddress": "0xF9BF836FEd97a9c9Bfe4D4c28316b9400C59Cc6B",
+    "staking_factory_address": "0xaB5f3Fc4F4Db4B912818C2bF2abd9c2Cbee04A36",
+    "stakingToken1_decimals": 18,
+    "stakingToken2_decimals": 8,
+    "multicall3": "0x9A630cB37ADf42c4B77AB310AD45990A3C03b847",
+    "issuer_btc_address": "1AEXQ6Gtu61bXPZnuQPXtJhXoEkTXCfYfH",
+    "start_block": 13329,
+    "batch_size": 50000
+  }
+}

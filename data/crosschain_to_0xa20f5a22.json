@@ -1,0 +1,30 @@
+{
+  "totalRecords": 2,
+  "totalAmount": "1.001",
+  "currentBlock": 3768939,
+  "nextBeforeBlock": 3120747,
+  "records": [
+    {
+      "sender": "0xa1779b57af3ee71a06bf7ab1df8649da19f5858a",
+      "txId": "0x47ae36b4ac92b2a59a1d82d865adf9681d5acc21908b9ea892f168558bb75761",
+      "targetAddress": "0xa20f5a22ef423b0e5c2db79a5475d9512d989971",
+      "amount": "0.001",
+      "amountRaw": "1000000000000000",
+      "blockNumber": 3390839,
+      "timestamp": 1764123145,
+      "timestampStr": "2025-11-26T02:12:25.000Z",
+      "transactionHash": "0x303d8846aabe7af06faafeb0ddc9f4ac13dd5f5d86eaacbeb98d20cbb00e0986"
+    },
+    {
+      "sender": "0xc0b24a5e850a80f478d471a333aa91a4e50ef830",
+      "txId": "0x1c52379a116afeb330160d482f50bb6d5179c07e94a017d8db551f6011e0a5da",
+      "targetAddress": "0xa20f5a22ef423b0e5c2db79a5475d9512d989971",
+      "amount": "1.0",
+      "amountRaw": "1000000000000000000",
+      "blockNumber": 3120747,
+      "timestamp": 1762744017,
+      "timestampStr": "2025-11-10T03:06:57.000Z",
+      "transactionHash": "0x76f0aa53db76230c495b00f97856e57af4d8c220ef1b29718aff9244b88afc58"
+    }
+  ]
+}

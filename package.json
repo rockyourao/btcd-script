@@ -1,0 +1,29 @@
+{
+  "name": "btcd-script",
+  "version": "1.0.0",
+  "description": "获取 ERC20 Token Transfer 事件的脚本工具",
+  "main": "getTransfers.ts",
+  "scripts": {
+    "get-transfers": "npx ts-node getTransfers.ts",
+    "to-csv": "npx ts-node getTransfers.ts --to-csv",
+    "test-batch": "npx ts-node testBatchSize.ts",
+    "cross-chain": "npx ts-node getCrossChainByAPI.ts"
+  },
+  "keywords": [
+    "elastos",
+    "btcd",
+    "erc20",
+    "transfer"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "ethers": "^5.7.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3"
+  }
+}
+
