@@ -2,7 +2,8 @@
  * 获取 LoanContract 合约的 OrderCreated 事件并读取订单详细信息
  *
  * 使用方法:
- * npx ts-node btcdOrderStats.ts                     # 获取所有订单
+ * npx ts-node btcdOrderStats.ts                     # 获取所有订单 (默认 eco-prod)
+ * npx ts-node btcdOrderStats.ts --network pgp-prod  # 指定网络
  * npx ts-node btcdOrderStats.ts --limit 50          # 获取最新 50 条
  * npx ts-node btcdOrderStats.ts --orderType 0       # 按订单类型过滤
  * npx ts-node btcdOrderStats.ts --skip-timestamp    # 跳过时间戳获取
@@ -15,8 +16,18 @@ const fs = require('fs');
 
 import { TIMESTAMP_BATCH_SIZE } from './config';
 
-// const network = 'eco-prod';
-const network = 'pgp-prod';
+// 从命令行参数解析 network
+function getNetworkFromArgs(): string {
+  const args = process.argv.slice(2);
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--network' && args[i + 1]) {
+      return args[i + 1];
+    }
+  }
+  return 'pgp-prod'; // 默认值
+}
+
+const network = getNetworkFromArgs();
 
 // 从 network.json 加载配置
 const networkConfig = require('./network.json');
@@ -492,7 +503,7 @@ async function getOrderCreatedLogs(
   provider: any,
   currentBlock: number,
   options: QueryOptions
-): Promise<{ records: OrderRecord[]; stats: any }> {
+): Promise<{ records: OrderRecord[] }> {
   const { orderType, limit, beforeBlock, fetchAll = true, skipTimestamp = true, fetchDetails = false } = options;
 
   const endBlock = currentBlock;
@@ -559,7 +570,7 @@ async function getOrderCreatedLogs(
   console.log(`\n总共获取到 ${allLogs.length} 条 OrderCreated 事件日志`);
 
   if (allLogs.length === 0) {
-    return { records: [], stats: {} };
+    return { records: [] };
   }
 
   // 按区块号升序排序
@@ -596,21 +607,7 @@ async function getOrderCreatedLogs(
     });
   }
 
-  // 统计数据
-  const stats = {
-    totalOrders: records.length,
-    borrowOrders: records.filter(r => r.orderType === OrderType.Borrow).length,
-    lendOrders: records.filter(r => r.orderType === OrderType.Lend).length,
-    totalCollateral: records.reduce((sum, r) => sum + parseFloat(r.collateral), 0),
-    totalTokenAmount: records.reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0),
-    uniqueTokens: [...new Set(records.map(r => r.token))],
-    firstOrderBlock: records.length > 0 ? records[0].blockNumber : null,
-    lastOrderBlock: records.length > 0 ? records[records.length - 1].blockNumber : null,
-    firstOrderTime: records.length > 0 ? records[0].timestampStr : null,
-    lastOrderTime: records.length > 0 ? records[records.length - 1].timestampStr : null
-  };
-
-  return { records, stats };
+  return { records };
 }
 
 async function main() {
@@ -625,7 +622,10 @@ async function main() {
 
   // 解析参数
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === '--orderType' && args[i + 1]) {
+    if (args[i] === '--network' && args[i + 1]) {
+      // 已在顶层处理，跳过
+      i++;
+    } else if (args[i] === '--orderType' && args[i + 1]) {
       orderType = parseInt(args[i + 1], 10);
       i++;
     } else if (args[i] === '--limit' && args[i + 1]) {
@@ -643,7 +643,7 @@ async function main() {
   }
 
   const startTime = Date.now();
-  console.log('\n===== 获取 OrderCreated 事件 =====');
+  console.log(`\n===== 获取 OrderCreated 事件 [网络: ${network}] =====`);
 
   const provider = new (ethers as any).providers.JsonRpcProvider(RPC_URL);
   const outputFile = `data/${network}/btcd_order_stats.json`;
@@ -813,6 +813,73 @@ async function main() {
     }
   };
 
+  // 按天统计借出订单数据（用于生成趋势图）
+  const dailyBorrowedStats: Map<number, { count: number; totalRealBtc: number; totalTokenAmount: number }> = new Map();
+  const dailyBtcdStats: Map<number, { totalRealBtc: number; totalTokenAmount: number }> = new Map();
+
+  allRecords.forEach(r => {
+    if (r.details?.borrowedTime) {
+      const dayTimestamp = getUnitStartTimestamp(r.details.borrowedTime, 'day');
+      const existing = dailyBorrowedStats.get(dayTimestamp) || { count: 0, totalRealBtc: 0, totalTokenAmount: 0 };
+      const existingBtcd = dailyBtcdStats.get(dayTimestamp) || { totalRealBtc: 0, totalTokenAmount: 0 };
+
+      existing.count += 1;
+      let lockedBTC = parseFloat(r.details.realBtcAmount || '0')
+      let btcdAmount = parseFloat(r.tokenAmount || '0');
+
+      existing.totalRealBtc += lockedBTC;
+      existing.totalTokenAmount += btcdAmount
+      dailyBorrowedStats.set(dayTimestamp, existing);
+
+      existingBtcd.totalRealBtc += lockedBTC;
+      existingBtcd.totalTokenAmount += btcdAmount;
+      dailyBtcdStats.set(dayTimestamp, existingBtcd);
+
+      // 订单已还款，需要解锁btc并销毁btcd
+      if (r.details.borrowerRepaidTime) {
+        const dayTimestamp = getUnitStartTimestamp(r.details.borrowerRepaidTime, 'day');
+        const existingBtcd = dailyBtcdStats.get(dayTimestamp) || { totalRealBtc: 0, totalTokenAmount: 0 };
+
+        existingBtcd.totalRealBtc -= parseFloat(r.details.realBtcAmount || '0');
+        existingBtcd.totalTokenAmount -= parseFloat(r.tokenAmount || '0');;
+        dailyBtcdStats.set(dayTimestamp, existingBtcd);
+      }
+    }
+  });
+
+  // 转换为数组并按日期排序（用于趋势图）
+  const dailyBorrowedArray = Array.from(dailyBorrowedStats.entries())
+    .map(([timestamp, data]) => ({
+      date: formatTimestampDisplay(timestamp, 'day'),
+      timestamp,
+      count: data.count,
+      totalRealBtc: data.totalRealBtc,
+      totalTokenAmount: data.totalTokenAmount
+    }))
+    .sort((a, b) => a.timestamp - b.timestamp);
+
+  // 打印每日借出统计
+  console.log(`\n===== 每日借出订单统计 (共 ${dailyBorrowedArray.length} 天) =====`);
+  dailyBorrowedArray.slice(-7).reverse().forEach(day => {
+    console.log(`  ${day.date}: 订单数=${day.count}, BTC=${day.totalRealBtc.toFixed(4)}, BTCD=${day.totalTokenAmount.toFixed(2)}`);
+  });
+
+  // 转换为数组并按日期排序（用于趋势图）
+  const dailyBtcdArray = Array.from(dailyBtcdStats.entries())
+    .map(([timestamp, data]) => ({
+      date: formatTimestampDisplay(timestamp, 'day'),
+      timestamp,
+      totalRealBtc: data.totalRealBtc,
+      totalTokenAmount: data.totalTokenAmount
+    }))
+    .sort((a, b) => a.timestamp - b.timestamp);
+
+  // 打印每日BTCD统计
+  console.log(`\n===== 每日 BTCD 增量统计 (共 ${dailyBtcdArray.length} 天) =====`);
+  dailyBtcdArray.slice(-7).reverse().forEach(day => {
+    console.log(`  ${day.date}: BTC=${day.totalRealBtc.toFixed(4)}, BTCD=${day.totalTokenAmount.toFixed(2)}`);
+  });
+
   console.log(`\n===== 订单统计 =====`);
   console.log(`总订单数: ${stats.totalOrders}`);
   const validOrdersPercent = stats.totalOrders > 0 ? ((stats.validOrders / stats.totalOrders) * 100).toFixed(2) : '0.00';
@@ -821,10 +888,10 @@ async function main() {
   console.log(`使用Discount订单数: ${stats.discountOrders} (${discountOrdersPercent}%)`);
   // console.log(`借款订单 (Borrow): ${stats.borrowOrders}`);
   // console.log(`出借订单 (Lend): ${stats.lendOrders}`);
-  console.log(`累计总抵押品: ${stats.totalCollateral.toFixed(8)} BTC`);
-  console.log(`累计总代币数量: ${stats.totalTokenAmount.toFixed(4)}`);
-  console.log(`当前活跃代币数量: ${stats.activeTokenAmount.toFixed(4)}`);
-  console.log(`当前订单铸造BTCD总量: ${stats.currentMintedBTCD.toFixed(4)}`);
+  console.log(`累计总抵押品: ${stats.totalCollateral.toFixed(2)} BTC`);
+  console.log(`累计BTCD铸造总量: ${stats.totalTokenAmount.toFixed(2)}`);
+  console.log(`活跃订单铸造BTCD数量: ${stats.activeTokenAmount.toFixed(2)}`);
+  console.log(`订单铸造BTCD总量（活跃订单 + 已清算订单）: ${stats.currentMintedBTCD.toFixed(2)}`);
 
 
   if (stats.firstOrderTime) {
@@ -837,19 +904,19 @@ async function main() {
   console.log(`\n===== 当前已借出统计 =====`);
   console.log(`  订单数: ${stats.currentBorrowed.count}`);
   console.log(`  抵押品: ${stats.currentBorrowed.collateral.toFixed(8)} BTC`);
-  console.log(`  代币数量: ${stats.currentBorrowed.tokenAmount.toFixed(4)}`);
+  console.log(`  代币数量: ${stats.currentBorrowed.tokenAmount.toFixed(2)}`);
 
   // 显示已清算订单统计
   console.log(`\n===== 已清算订单统计 =====`);
   console.log(`  订单数: ${stats.liquidatedStats.count}`);
   console.log(`  抵押品: ${stats.liquidatedStats.collateral.toFixed(8)} BTC`);
-  console.log(`  代币数量: ${stats.liquidatedStats.tokenAmount.toFixed(4)}`);
+  console.log(`  代币数量: ${stats.liquidatedStats.tokenAmount.toFixed(2)}`);
 
   // 显示到期未还款订单统计
   console.log(`\n===== 到期未还款订单统计 =====`);
   console.log(`  订单数: ${stats.overdueStats.count}`);
   console.log(`  抵押品: ${stats.overdueStats.collateral.toFixed(8)} BTC`);
-  console.log(`  代币数量: ${stats.overdueStats.tokenAmount.toFixed(4)}`);
+  console.log(`  代币数量: ${stats.overdueStats.tokenAmount.toFixed(2)}`);
 
   // 显示状态统计
   console.log(`\n===== 订单状态分布 =====`);

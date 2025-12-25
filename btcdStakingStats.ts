@@ -3,6 +3,7 @@
  *
  * 使用方法:
  * npx ts-node btcdStakingStats.ts
+ * npx ts-node btcdStakingStats.ts --network pgp-prod  # 指定网络
  */
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -10,8 +11,18 @@ import { ethers } from 'ethers';
 const fs = require('fs');
 
 
-// const network = 'eco-prod';
-let network = 'pgp-prod';
+// 从命令行参数解析 network
+function getNetworkFromArgs(): string {
+  const args = process.argv.slice(2);
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--network' && args[i + 1]) {
+      return args[i + 1];
+    }
+  }
+  return 'pgp-prod'; // 默认值
+}
+
+const network = getNetworkFromArgs();
 
 // 从 network.json 加载配置
 const networkConfig = require('./network.json');
@@ -1037,11 +1048,11 @@ async function main() {
   console.log(`  TransferIn (转入 Staking): ${stats.transferInEvents}`);
   console.log(`  TransferOut (转出 Staking): ${stats.transferOutEvents}`);
   console.log(`\n===== 活跃质押总量 =====`);
-  console.log(`  ETH: ${stats.totalActiveEth.toFixed(8)}`);
+  console.log(`  Native Token: ${stats.totalActiveEth.toFixed(8)}`);
   console.log(`  Token1: ${stats.totalActiveToken1.toFixed(4)}`);
   console.log(`  Token2: ${stats.totalActiveToken2.toFixed(4)}`);
   console.log(`\n===== 历史累计质押总量 =====`);
-  console.log(`  ETH: ${stats.totalEth.toFixed(8)}`);
+  console.log(`  Native Token: ${stats.totalEth.toFixed(8)}`);
   console.log(`  Token1: ${stats.totalToken1.toFixed(4)}`);
   console.log(`  Token2: ${stats.totalToken2.toFixed(4)}`);
 
