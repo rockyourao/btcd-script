@@ -817,6 +817,12 @@ async function main() {
   const dailyBorrowedStats: Map<number, { count: number; totalRealBtc: number; totalTokenAmount: number }> = new Map();
   const dailyBtcdStats: Map<number, { totalRealBtc: number; totalTokenAmount: number }> = new Map();
 
+  const weeklyBorrowedStats: Map<number, { count: number; totalRealBtc: number; totalTokenAmount: number }> = new Map();
+  const weeklyBtcdStats: Map<number, { totalRealBtc: number; totalTokenAmount: number }> = new Map();
+
+  const monthlyBorrowedStats: Map<number, { count: number; totalRealBtc: number; totalTokenAmount: number }> = new Map();
+  const monthlyBtcdStats: Map<number, { totalRealBtc: number; totalTokenAmount: number }> = new Map();
+
   allRecords.forEach(r => {
     if (r.details?.borrowedTime) {
       const dayTimestamp = getUnitStartTimestamp(r.details.borrowedTime, 'day');
@@ -835,6 +841,32 @@ async function main() {
       existingBtcd.totalTokenAmount += btcdAmount;
       dailyBtcdStats.set(dayTimestamp, existingBtcd);
 
+      const weekTimestamp = getUnitStartTimestamp(r.details.borrowedTime, 'week');
+      const existingWeek = weeklyBorrowedStats.get(weekTimestamp) || { count: 0, totalRealBtc: 0, totalTokenAmount: 0 };
+      const existingWeekBtcd = weeklyBtcdStats.get(weekTimestamp) || { totalRealBtc: 0, totalTokenAmount: 0 };
+
+      existingWeek.count += 1;
+      existingWeek.totalRealBtc += lockedBTC;
+      existingWeek.totalTokenAmount += btcdAmount;
+      weeklyBorrowedStats.set(weekTimestamp, existingWeek);
+
+      existingWeekBtcd.totalRealBtc += lockedBTC;
+      existingWeekBtcd.totalTokenAmount += btcdAmount;
+      weeklyBtcdStats.set(weekTimestamp, existingWeekBtcd);
+
+      const monthTimestamp = getUnitStartTimestamp(r.details.borrowedTime, 'month');
+      const existingMonth = monthlyBorrowedStats.get(monthTimestamp) || { count: 0, totalRealBtc: 0, totalTokenAmount: 0 };
+      const existingMonthBtcd = monthlyBtcdStats.get(monthTimestamp) || { totalRealBtc: 0, totalTokenAmount: 0 };
+
+      existingMonth.count += 1;
+      existingMonth.totalRealBtc += lockedBTC;
+      existingMonth.totalTokenAmount += btcdAmount;
+      monthlyBorrowedStats.set(monthTimestamp, existingMonth);
+
+      existingMonthBtcd.totalRealBtc += lockedBTC;
+      existingMonthBtcd.totalTokenAmount += btcdAmount;
+      monthlyBtcdStats.set(monthTimestamp, existingMonthBtcd);
+
       // 订单已还款，需要解锁btc并销毁btcd
       if (r.details.borrowerRepaidTime) {
         const dayTimestamp = getUnitStartTimestamp(r.details.borrowerRepaidTime, 'day');
@@ -843,6 +875,20 @@ async function main() {
         existingBtcd.totalRealBtc -= parseFloat(r.details.realBtcAmount || '0');
         existingBtcd.totalTokenAmount -= parseFloat(r.tokenAmount || '0');;
         dailyBtcdStats.set(dayTimestamp, existingBtcd);
+
+        const weekTimestamp = getUnitStartTimestamp(r.details.borrowerRepaidTime, 'week');
+        const existingWeekBtcd = weeklyBtcdStats.get(weekTimestamp) || { totalRealBtc: 0, totalTokenAmount: 0 };
+
+        existingWeekBtcd.totalRealBtc -= parseFloat(r.details.realBtcAmount || '0');
+        existingWeekBtcd.totalTokenAmount -= parseFloat(r.tokenAmount || '0');
+        weeklyBtcdStats.set(weekTimestamp, existingWeekBtcd);
+
+        const monthTimestamp = getUnitStartTimestamp(r.details.borrowerRepaidTime, 'month');
+        const existingMonthBtcd = monthlyBtcdStats.get(monthTimestamp) || { totalRealBtc: 0, totalTokenAmount: 0 };
+
+        existingMonthBtcd.totalRealBtc -= parseFloat(r.details.realBtcAmount || '0');
+        existingMonthBtcd.totalTokenAmount -= parseFloat(r.tokenAmount || '0');
+        monthlyBtcdStats.set(monthTimestamp, existingMonthBtcd);
       }
     }
   });
@@ -879,6 +925,74 @@ async function main() {
   dailyBtcdArray.slice(-7).reverse().forEach(day => {
     console.log(`  ${day.date}: BTC=${day.totalRealBtc.toFixed(4)}, BTCD=${day.totalTokenAmount.toFixed(2)}`);
   });
+
+  // 转换为数组并按日期排序（用于趋势图）
+  const weeklyBorrowedArray = Array.from(weeklyBorrowedStats.entries())
+    .map(([timestamp, data]) => ({
+      date: formatTimestampDisplay(timestamp, 'week'),
+      timestamp,
+      count: data.count,
+      totalRealBtc: data.totalRealBtc,
+      totalTokenAmount: data.totalTokenAmount
+    }))
+    .sort((a, b) => a.timestamp - b.timestamp);
+
+  // 打印每周借出订单统计
+  console.log(`\n===== 每周借出订单统计 (共 ${weeklyBorrowedArray.length} 周) =====`);
+  weeklyBorrowedArray.slice(-7).reverse().forEach(week => {
+    console.log(`  ${week.date}: 订单数=${week.count}, BTC=${week.totalRealBtc.toFixed(4)}, BTCD=${week.totalTokenAmount.toFixed(2)}`);
+  });
+
+  // 转换为数组并按日期排序（用于趋势图）
+  const weeklyBtcdArray = Array.from(weeklyBtcdStats.entries())
+    .map(([timestamp, data]) => ({
+      date: formatTimestampDisplay(timestamp, 'week'),
+      timestamp,
+      totalRealBtc: data.totalRealBtc,
+      totalTokenAmount: data.totalTokenAmount
+    }))
+    .sort((a, b) => a.timestamp - b.timestamp);
+
+
+  // 打印每周BTCD统计
+  console.log(`\n===== 每周 BTCD 增量统计 (共 ${weeklyBtcdArray.length} 周) =====`);
+  weeklyBtcdArray.slice(-7).reverse().forEach(week => {
+    console.log(`  ${week.date}: BTC=${week.totalRealBtc.toFixed(4)}, BTCD=${week.totalTokenAmount.toFixed(2)}`);
+  });
+
+
+  const monthlyBorrowedArray = Array.from(monthlyBorrowedStats.entries())
+    .map(([timestamp, data]) => ({
+      date: formatTimestampDisplay(timestamp, 'month'),
+      timestamp,
+      count: data.count,
+      totalRealBtc: data.totalRealBtc,
+      totalTokenAmount: data.totalTokenAmount
+    }))
+    .sort((a, b) => a.timestamp - b.timestamp);
+
+  // 打印每月借出订单统计
+  console.log(`\n===== 每月借出订单统计 (共 ${monthlyBorrowedArray.length} 月) =====`);
+  monthlyBorrowedArray.slice(-7).reverse().forEach(month => {
+    console.log(`  ${month.date}: 订单数=${month.count}, BTC=${month.totalRealBtc.toFixed(4)}, BTCD=${month.totalTokenAmount.toFixed(2)}`);
+  });
+
+  // 转换为数组并按日期排序（用于趋势图）
+  const monthlyBtcdArray = Array.from(monthlyBtcdStats.entries())
+    .map(([timestamp, data]) => ({
+      date: formatTimestampDisplay(timestamp, 'month'),
+      timestamp,
+      totalRealBtc: data.totalRealBtc,
+      totalTokenAmount: data.totalTokenAmount
+    }))
+    .sort((a, b) => a.timestamp - b.timestamp);
+
+  // 打印每月BTCD统计
+  console.log(`\n===== 每月 BTCD 增量统计 (共 ${monthlyBtcdArray.length} 月) =====`);
+  monthlyBtcdArray.slice(-7).reverse().forEach(month => {
+    console.log(`  ${month.date}: BTC=${month.totalRealBtc.toFixed(4)}, BTCD=${month.totalTokenAmount.toFixed(2)}`);
+  });
+
 
   console.log(`\n===== 订单统计 =====`);
   console.log(`总订单数: ${stats.totalOrders}`);
