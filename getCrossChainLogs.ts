@@ -11,11 +11,11 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { ethers } from 'ethers';
+import { getBlockTimestamps, topicToAddress, topicToAmount } from './util';
 const fs = require('fs');
 
 const RPC_URL = 'https://api.elastos.cc/eco';
 const BATCH_SIZE = 50000;
-const TIMESTAMP_BATCH_SIZE = 10000;
 
 // 跨链事件签名 (从分析交易得到)
 // 事件: CrossChain(address sender, bytes32 txId, address targetAddress, uint256 amount)
@@ -48,20 +48,6 @@ interface QueryOptions {
 }
 
 /**
- * 将 topic 转换为地址格式
- */
-function topicToAddress(topic: string): string {
-  return '0x' + topic.slice(26).toLowerCase();
-}
-
-/**
- * 将 topic 转换为 BigNumber
- */
-function topicToAmount(topic: string): any {
-  return (ethers as any).BigNumber.from(topic);
-}
-
-/**
  * 构建 topics 过滤数组
  */
 function buildTopics(filterFromAddress?: string, filterToAddress?: string): (string | null)[] {
@@ -80,46 +66,6 @@ function buildTopics(filterFromAddress?: string, filterToAddress?: string): (str
   }
 
   return topics;
-}
-
-/**
- * 获取区块时间戳
- */
-async function getBlockTimestamps(blockNumbers: number[]): Promise<Map<number, number>> {
-  const blockTimestamps: Map<number, number> = new Map();
-
-  for (let i = 0; i < blockNumbers.length; i += TIMESTAMP_BATCH_SIZE) {
-    const batch = blockNumbers.slice(i, i + TIMESTAMP_BATCH_SIZE);
-
-    try {
-      const batchRequest = batch.map((blockNum: number, idx: number) => ({
-        jsonrpc: '2.0',
-        id: idx,
-        method: 'eth_getBlockByNumber',
-        params: ['0x' + blockNum.toString(16), false]
-      }));
-
-      const response = await fetch(RPC_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(batchRequest)
-      });
-
-      const results = await response.json() as any[];
-
-      for (const result of results) {
-        if (result.result && result.result.timestamp) {
-          const blockNum = parseInt(result.result.number, 16);
-          const timestamp = parseInt(result.result.timestamp, 16);
-          blockTimestamps.set(blockNum, timestamp);
-        }
-      }
-    } catch (error) {
-      console.error(`获取区块时间戳失败:`, error);
-    }
-  }
-
-  return blockTimestamps;
 }
 
 /**
@@ -247,7 +193,7 @@ async function getCrossChainLogsReverse(
   const uniqueBlockNumbers = [...new Set(logsToProcess.map((log: any) => log.blockNumber))] as number[];
   console.log(`需要获取 ${uniqueBlockNumbers.length} 个区块的时间戳...`);
 
-  const blockTimestamps = await getBlockTimestamps(uniqueBlockNumbers);
+  const blockTimestamps = await getBlockTimestamps(uniqueBlockNumbers, RPC_URL);
   const records = parseLogsToRecords(logsToProcess, blockTimestamps);
 
   // 计算下一页的 beforeBlock（最后一条记录的区块号）

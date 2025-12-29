@@ -14,7 +14,7 @@
 const { ethers } = require('ethers');
 const fs = require('fs');
 
-import { TIMESTAMP_BATCH_SIZE } from './config';
+import { formatBtc, formatTimestampDisplay, getBlockTimestamps, getUnitStartTimestamp, timestampToStr, topicToAddress } from './util';
 
 // 从命令行参数解析 network
 function getNetworkFromArgs(): string {
@@ -124,31 +124,6 @@ interface OrderDetails {
   useDiscount: boolean;         // collateral == toLenderBtcTx.amount
 }
 
-// BTC 精度 (8 位小数)
-const BTC_DECIMALS = 8;
-
-/**
- * 将 satoshi 转换为 BTC
- */
-function formatBtc(satoshi: any): string {
-  if (!satoshi) return '0';
-  const satoshiStr = satoshi.toString();
-  if (satoshiStr === '0') return '0';
-
-  // 使用 BigNumber 进行精确计算
-  const bn = ethers.BigNumber.from(satoshi);
-  const divisor = ethers.BigNumber.from(10).pow(BTC_DECIMALS);
-  const intPart = bn.div(divisor);
-  const fracPart = bn.mod(divisor);
-
-  if (fracPart.isZero()) {
-    return intPart.toString();
-  }
-
-  const fracStr = fracPart.toString().padStart(BTC_DECIMALS, '0').replace(/0+$/, '');
-  return `${intPart.toString()}.${fracStr}`;
-}
-
 interface QueryOptions {
   orderType?: number;
   limit?: number;
@@ -160,127 +135,6 @@ interface QueryOptions {
 
 // Multicall 批次大小
 const MULTICALL_BATCH_SIZE = 200;
-
-/**
- * 将 topic 转换为地址格式
- */
-function topicToAddress(topic: string): string {
-  return '0x' + topic.slice(26).toLowerCase();
-}
-
-/**
- * 获取区块时间戳
- */
-async function getBlockTimestamps(blockNumbers: number[]): Promise<Map<number, number>> {
-  const blockTimestamps: Map<number, number> = new Map();
-
-  for (let i = 0; i < blockNumbers.length; i += TIMESTAMP_BATCH_SIZE) {
-    const batch = blockNumbers.slice(i, i + TIMESTAMP_BATCH_SIZE);
-
-    try {
-      const batchRequest = batch.map((blockNum: number, idx: number) => ({
-        jsonrpc: '2.0',
-        id: idx,
-        method: 'eth_getBlockByNumber',
-        params: ['0x' + blockNum.toString(16), false]
-      }));
-
-      const response = await fetch(RPC_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(batchRequest)
-      });
-
-      const results = await response.json() as any[];
-
-      for (const result of results) {
-        if (result.result && result.result.timestamp) {
-          const blockNum = parseInt(result.result.number, 16);
-          const timestamp = parseInt(result.result.timestamp, 16);
-          blockTimestamps.set(blockNum, timestamp);
-        }
-      }
-    } catch (error) {
-      console.error(`获取区块时间戳失败:`, error);
-    }
-  }
-
-  return blockTimestamps;
-}
-
-/**
- * 将时间戳转换为可读字符串
- */
-function timestampToStr(timestamp: number): string {
-  if (!timestamp || timestamp === 0) return '';
-  return new Date(timestamp * 1000).toISOString();
-}
-
-/**
- * 获取指定时间戳所在的时间单位开始时间戳
- * @param {number} [timestamp=Date.now()] - 时间戳（毫秒）
- * @param {string} [unit='day'] - 时间单位: 'day' | 'week' | 'month'
- * @returns {number} 时间戳（秒）
- */
-function getUnitStartTimestamp(timestamp: number, unit: 'day' | 'week' | 'month' = 'day'): number {
-  const date = new Date(timestamp * 1000);
-
-  // 重置时分秒为00:00:00
-  date.setHours(0, 0, 0, 0);
-
-  switch(unit.toLowerCase()) {
-      case 'week':
-          const day = date.getDay();
-          const diff = date.getDate() - day + (day === 0 ? -6 : 1); // 计算周一的日期
-          date.setDate(diff);
-          break;
-
-      case 'month':
-          date.setDate(1); // 设置为当月1号
-          break;
-
-      // 'day' 是默认情况，已经处理了
-  }
-
-  return Math.floor(date.getTime() / 1000); // 返回秒级时间戳
-}
-
-
-/**
- * 格式化时间戳为可读的日期字符串
- * @param timestamp 时间戳（秒）
- * @param unit 时间单位: 'day' | 'week' | 'month'，默认为'week'
- * @returns 格式化后的日期字符串
- */
-function formatTimestampDisplay(timestamp: number, unit: 'day' | 'week' | 'month' = 'week'): string {
-  const dt = new Date(timestamp * 1000);
-
-  switch(unit) {
-    case 'day':
-      return dt.toLocaleDateString('en-US', {
-        month: 'short',
-        day: 'numeric'
-      });
-
-    case 'week':
-      return `Week of ${dt.toLocaleDateString('en-US', {
-        month: 'short',
-        day: 'numeric'
-      })}`;
-
-    case 'month':
-      return dt.toLocaleDateString('en-US', {
-        year: 'numeric',
-        month: 'long'
-      });
-
-    default:
-      return dt.toLocaleDateString('en-US', {
-        month: 'short',
-        day: 'numeric'
-      });
-  }
-}
 
 /**
  * 使用 Multicall3 批量获取订单详细信息
@@ -309,7 +163,7 @@ async function fetchOrderDetailsWithMulticall(
   ];
 
   console.log(`\n使用 Multicall3 获取 ${orderIds.length} 个订单的详细信息...`);
-  console.log(`Multicall3 地址: ${MULTICALL3_ADDRESS}`);
+  // console.log(`Multicall3 地址: ${MULTICALL3_ADDRESS}`);
   console.log(`每批次处理: ${MULTICALL_BATCH_SIZE} 个订单`);
 
   // 分批处理订单
@@ -581,7 +435,7 @@ async function getOrderCreatedLogs(
   if (!skipTimestamp) {
     const uniqueBlockNumbers = [...new Set(allLogs.map((log: any) => log.blockNumber))] as number[];
     console.log(`需要获取 ${uniqueBlockNumbers.length} 个区块的时间戳...`);
-    blockTimestamps = await getBlockTimestamps(uniqueBlockNumbers);
+    blockTimestamps = await getBlockTimestamps(uniqueBlockNumbers, RPC_URL);
   } else {
     console.log(`跳过时间戳获取...`);
   }
@@ -774,6 +628,8 @@ async function main() {
     // 当前订单铸造的BTCD总量 = 当前活跃代币数量 + 已清算订单的代币数量
     currentMintedBTCD: allRecords.filter(r => r.details?.status !== OrderStatus.CLOSED).reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0) +
       liquidatedOrders.reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0),
+    // 当前锁定在订单中的BTCD总量 = 还未借出和已还款（未关闭）的订单的代币数量
+    lockedInOrdersBTCD: allRecords.filter(r => r.details?.status !== OrderStatus.BORROWED && r.details?.status !== OrderStatus.CLOSED).reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0),
     uniqueTokens: [...new Set(allRecords.map(r => r.token))],
     firstOrderBlock: allRecords.length > 0 ? allRecords[0].blockNumber : null,
     lastOrderBlock: allRecords.length > 0 ? allRecords[allRecords.length - 1].blockNumber : null,
@@ -920,7 +776,7 @@ async function main() {
     }))
     .sort((a, b) => a.timestamp - b.timestamp);
 
-  // 打印每日BTCD统计
+  // 打印每日BTCD统计 (注意：有些订单未使用Discount，所以存在totalRealBtc为正，但totalTokenAmount为负的情况)
   console.log(`\n===== 每日 BTCD 增量统计 (共 ${dailyBtcdArray.length} 天) =====`);
   dailyBtcdArray.slice(-7).reverse().forEach(day => {
     console.log(`  ${day.date}: BTC=${day.totalRealBtc.toFixed(4)}, BTCD=${day.totalTokenAmount.toFixed(2)}`);
@@ -1006,6 +862,7 @@ async function main() {
   console.log(`累计BTCD铸造总量: ${stats.totalTokenAmount.toFixed(2)}`);
   console.log(`活跃订单铸造BTCD数量: ${stats.activeTokenAmount.toFixed(2)}`);
   console.log(`订单铸造BTCD总量（活跃订单 + 已清算订单）: ${stats.currentMintedBTCD.toFixed(2)}`);
+  console.log(`锁定在订单中的BTCD总量: ${stats.lockedInOrdersBTCD.toFixed(2)}`);
 
 
   if (stats.firstOrderTime) {
@@ -1047,39 +904,6 @@ async function main() {
   console.log(`  LIQUIDATED (已清算): ${stats.statusStats.liquidated}`);
 
   if (allRecords.length > 0) {
-    // 显示最新的几条记录
-    // console.log(`\n===== 最新订单记录 (最新 5 条) =====`);
-    // const latestRecords = allRecords.slice(-5).reverse();
-    // for (const r of latestRecords) {
-    //   console.log(`\n${r.timestampStr} (区块 ${r.blockNumber})`);
-    //   console.log(`  订单ID: ${r.orderId}`);
-    //   console.log(`  类型: ${r.orderTypeName}`);
-    //   console.log(`  抵押品: ${r.collateral} BTC`);
-    //   console.log(`  代币: ${r.token}`);
-    //   console.log(`  代币数量: ${r.tokenAmount}`);
-    //   console.log(`  交易: https://eco.elastos.io/tx/${r.transactionHash}`);
-
-    //   // 显示订单详情（如果有）
-    //   if (r.details) {
-    //     console.log(`  --- 订单详情 ---`);
-    //     console.log(`  状态: ${r.details.statusName} (${r.details.status})`);
-    //     console.log(`  借款人: ${r.details.borrower || '无'}`);
-    //     console.log(`  借款人BTC地址: ${r.details.borrowerBtcAddress || '无'}`);
-    //     console.log(`  出借人: ${r.details.lender || '无'}`);
-    //     console.log(`  出借人BTC地址: ${r.details.lenderBtcAddress || '无'}`);
-    //     console.log(`  创建时间: ${r.details.createTimeStr || '无'}`);
-    //     console.log(`  接单时间: ${r.details.takenTimeStr || '无'}`);
-    //     console.log(`  借款时间: ${r.details.borrowedTimeStr || '无'}`);
-    //     console.log(`  还款时间: ${r.details.borrowerRepaidTimeStr || '无'}`);
-    //     console.log(`  实际BTC金额: ${r.details.realBtcAmount || '0'} BTC`);
-    //     console.log(`  使用折扣: ${r.details.useDiscount ? '是' : '否'}`);
-    //   }
-    // }
-
-    // if (allRecords.length > 5) {
-    //   console.log(`\n... 还有 ${allRecords.length - 5} 条记录`);
-    // }
-
     // 保存到文件
     fs.writeFileSync(outputFile, JSON.stringify({
       stats,

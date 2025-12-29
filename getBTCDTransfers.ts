@@ -19,6 +19,7 @@ const fs = require('fs');
 import {
   TIMESTAMP_BATCH_SIZE
 } from './config';
+import { formatTimestampDisplay, getUnitStartTimestamp } from './util';
 
 // 从命令行参数解析 network
 function getNetworkFromArgs(): string {
@@ -70,6 +71,8 @@ interface TransferData {
   transfers: TransferRecord[];
   usdtTransfers: TransferRecord[];
 }
+
+type BtcdStats = { mintedBTCD: number; burnedBTCD: number; mintedBTCDByOrder: number; burnedBTCDByOrder: number; mintedBTCDByUSDT: number; burnedBTCDByUSDT: number; netValue: number, netValueByOrder: number };
 
 async function getAllTransfers(startBlock: number): Promise<{ transfers: TransferRecord[]; lastBlock: number }> {
   console.log('正在连接到 RPC...');
@@ -267,42 +270,103 @@ async function main() {
     console.log(`\n===== 所有 BTCD 铸造/销毁 统计 =====`);
     console.log(`总记录数: ${transfers.length}`);
 
+    const dailyBtcdStats: Map<number, BtcdStats> = new Map();
+    const weeklyBtcdStats: Map<number, BtcdStats> = new Map();
+    const monthlyBtcdStats: Map<number, BtcdStats> = new Map();
 
     if (transfers.length > 0) {
       // 计算净铸造量（铸造 - 销毁）
       const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
       let totalMinted = (ethers as any).BigNumber.from(0);
       let totalBurned = (ethers as any).BigNumber.from(0);
+
+      // 统计非 Issuer 的铸造/销毁（即通过 USDT 的铸造和销毁）
+      let mintedByUsdt = (ethers as any).BigNumber.from(0);
+      let burnedByUsdt = (ethers as any).BigNumber.from(0);
+
       for (const t of transfers) {
+        const dayTimestamp = getUnitStartTimestamp(t.timestamp, 'day');
+        const weekTimestamp = getUnitStartTimestamp(t.timestamp, 'week');
+        const monthTimestamp = getUnitStartTimestamp(t.timestamp, 'month');
+        const existingDailyBtcd = dailyBtcdStats.get(dayTimestamp) || { mintedBTCD: 0, burnedBTCD: 0, mintedBTCDByOrder: 0, burnedBTCDByOrder: 0, mintedBTCDByUSDT: 0, burnedBTCDByUSDT: 0, netValue: 0, netValueByOrder: 0 };
+        const existingWeeklyBtcd = weeklyBtcdStats.get(weekTimestamp) || { mintedBTCD: 0, burnedBTCD: 0, mintedBTCDByOrder: 0, burnedBTCDByOrder: 0, mintedBTCDByUSDT: 0, burnedBTCDByUSDT: 0, netValue: 0, netValueByOrder: 0 };
+        const existingMonthlyBtcd = monthlyBtcdStats.get(monthTimestamp) || { mintedBTCD: 0, burnedBTCD: 0, mintedBTCDByOrder: 0, burnedBTCDByOrder: 0, mintedBTCDByUSDT: 0, burnedBTCDByUSDT: 0, netValue: 0, netValueByOrder: 0};
+
+        let actionByUSDT = t.from.toLowerCase() !== ISSUER_ADDRESS && t.to.toLowerCase() !== ISSUER_ADDRESS;
+
         const value = (ethers as any).BigNumber.from(t.valueRaw);
         if (t.from === ZERO_ADDRESS) {
           // 铸造
           totalMinted = totalMinted.add(value);
+
+          existingDailyBtcd.mintedBTCD += parseFloat(t.value);
+          existingWeeklyBtcd.mintedBTCD += parseFloat(t.value);
+          existingMonthlyBtcd.mintedBTCD += parseFloat(t.value);
+
+          existingDailyBtcd.netValue += parseFloat(t.value);
+          existingWeeklyBtcd.netValue += parseFloat(t.value);
+          existingMonthlyBtcd.netValue += parseFloat(t.value);
+
+          if (actionByUSDT) {
+            // 通过 USDT 铸造
+            mintedByUsdt = mintedByUsdt.add(value);
+
+            existingDailyBtcd.mintedBTCDByUSDT += parseFloat(t.value);
+            existingWeeklyBtcd.mintedBTCDByUSDT += parseFloat(t.value);
+            existingMonthlyBtcd.mintedBTCDByUSDT += parseFloat(t.value);
+          } else {
+            // 通过 Order 铸造
+            existingDailyBtcd.mintedBTCDByOrder += parseFloat(t.value);
+            existingWeeklyBtcd.mintedBTCDByOrder += parseFloat(t.value);
+            existingMonthlyBtcd.mintedBTCDByOrder += parseFloat(t.value);
+
+            existingDailyBtcd.netValueByOrder += parseFloat(t.value);
+            existingWeeklyBtcd.netValueByOrder += parseFloat(t.value);
+            existingMonthlyBtcd.netValueByOrder += parseFloat(t.value);
+          }
         } else if (t.to === ZERO_ADDRESS) {
           // 销毁
           totalBurned = totalBurned.add(value);
+
+          existingDailyBtcd.burnedBTCD += parseFloat(t.value);
+          existingWeeklyBtcd.burnedBTCD += parseFloat(t.value);
+          existingMonthlyBtcd.burnedBTCD += parseFloat(t.value);
+
+          existingDailyBtcd.netValue -= parseFloat(t.value);
+          existingWeeklyBtcd.netValue -= parseFloat(t.value);
+          existingMonthlyBtcd.netValue -= parseFloat(t.value);
+
+          if (actionByUSDT) {
+            // 通过 USDT 销毁
+            burnedByUsdt = burnedByUsdt.add(value);
+
+            existingDailyBtcd.burnedBTCDByUSDT += parseFloat(t.value);
+            existingWeeklyBtcd.burnedBTCDByUSDT += parseFloat(t.value);
+            existingMonthlyBtcd.burnedBTCDByUSDT += parseFloat(t.value);
+          } else {
+            // 通过 Order 销毁
+            existingDailyBtcd.burnedBTCDByOrder += parseFloat(t.value);
+            existingWeeklyBtcd.burnedBTCDByOrder += parseFloat(t.value);
+            existingMonthlyBtcd.burnedBTCDByOrder += parseFloat(t.value);
+
+            existingDailyBtcd.netValueByOrder -= parseFloat(t.value);
+            existingWeeklyBtcd.netValueByOrder -= parseFloat(t.value);
+            existingMonthlyBtcd.netValueByOrder -= parseFloat(t.value);
+          }
         }
+
+        dailyBtcdStats.set(dayTimestamp, existingDailyBtcd);
+        weeklyBtcdStats.set(weekTimestamp, existingWeeklyBtcd);
+        monthlyBtcdStats.set(monthTimestamp, existingMonthlyBtcd);
       }
       const netValue = totalMinted.sub(totalBurned);
-
+      const netValueByUSDT = mintedByUsdt.sub(burnedByUsdt);
 
       // 统计非 Issuer 的铸造/销毁（即通过 USDT 的铸造和销毁）
       const usdtTransfers = transfers.filter(
         t => t.from.toLowerCase() !== ISSUER_ADDRESS &&
              t.to.toLowerCase() !== ISSUER_ADDRESS
       );
-      let mintedByUsdt = (ethers as any).BigNumber.from(0);
-      let burnedByUsdt = (ethers as any).BigNumber.from(0);
-      for (const t of usdtTransfers) {
-        const value = (ethers as any).BigNumber.from(t.valueRaw);
-        if (t.from === ZERO_ADDRESS) {
-          mintedByUsdt = mintedByUsdt.add(value);
-        } else if (t.to === ZERO_ADDRESS) {
-          burnedByUsdt = burnedByUsdt.add(value);
-        }
-      }
-      const userNetValue = mintedByUsdt.sub(burnedByUsdt);
-
 
       const stats = {
         totalBTCDMinted: (ethers as any).utils.formatUnits(totalMinted, TOKEN_DECIMALS),
@@ -310,7 +374,7 @@ async function main() {
         totalBTCDNetValue: (ethers as any).utils.formatUnits(netValue, TOKEN_DECIMALS),
         usdtBTCDMinted: (ethers as any).utils.formatUnits(mintedByUsdt, TOKEN_DECIMALS),
         usdtBTCDBurned: (ethers as any).utils.formatUnits(burnedByUsdt, TOKEN_DECIMALS),
-        usdtBTCDNetValue: (ethers as any).utils.formatUnits(userNetValue, TOKEN_DECIMALS),
+        usdtBTCDNetValue: (ethers as any).utils.formatUnits(netValueByUSDT, TOKEN_DECIMALS),
         usdtBTCDCount: usdtTransfers.length,
         totalBTCDCount: transfers.length,
       };
@@ -323,6 +387,72 @@ async function main() {
       console.log(`USDT销毁量: ${stats.usdtBTCDBurned} BTCD`);
       console.log(`USDT净流通: ${stats.usdtBTCDNetValue} BTCD`);
       console.log(`USDT记录数: ${stats.usdtBTCDCount}`);
+
+      // 转换为数组并按日期排序（用于趋势图）
+      const dailyBtcdArray = Array.from(dailyBtcdStats.entries())
+      .map(([timestamp, data]) => ({
+        date: formatTimestampDisplay(timestamp, 'day'),
+        timestamp,
+        mintedBTCD: data.mintedBTCD,
+        burnedBTCD: data.burnedBTCD,
+        mintedBTCDByOrder: data.mintedBTCDByOrder,
+        burnedBTCDByOrder: data.burnedBTCDByOrder,
+        mintedBTCDByUSDT: data.mintedBTCDByUSDT,
+        burnedBTCDByUSDT: data.burnedBTCDByUSDT,
+        netValue: data.netValue,
+        netValueByOrder: data.netValueByOrder,
+      }))
+      .sort((a, b) => a.timestamp - b.timestamp);
+
+      // 打印每日借出统计
+      console.log(`\n===== 每日 BTCD 流通量统计 (共 ${dailyBtcdArray.length} 天) =====`);
+      dailyBtcdArray.slice(-7).reverse().forEach(day => {
+        console.log(`  ${day.date}: 铸造ByOrder=${day.mintedBTCDByOrder.toFixed(4)}, 销毁ByOrder=${day.burnedBTCDByOrder.toFixed(4)}, 净流通ByOrder=${day.netValueByOrder.toFixed(4)}`);
+      });
+
+      // 转换为数组并按日期排序（用于趋势图）
+      const weeklyBtcdArray = Array.from(weeklyBtcdStats.entries())
+      .map(([timestamp, data]) => ({
+        date: formatTimestampDisplay(timestamp, 'week'),
+        timestamp,
+        mintedBTCD: data.mintedBTCD,
+        burnedBTCD: data.burnedBTCD,
+        mintedBTCDByOrder: data.mintedBTCDByOrder,
+        burnedBTCDByOrder: data.burnedBTCDByOrder,
+        mintedBTCDByUSDT: data.mintedBTCDByUSDT,
+        burnedBTCDByUSDT: data.burnedBTCDByUSDT,
+        netValue: data.netValue,
+        netValueByOrder: data.netValueByOrder,
+      }))
+      .sort((a, b) => a.timestamp - b.timestamp);
+
+      // 打印每周 BTCD 流通量统计
+      console.log(`\n===== 每周 BTCD 流通量统计 (共 ${weeklyBtcdArray.length} 周) =====`);
+      weeklyBtcdArray.slice(-7).reverse().forEach(week => {
+        console.log(`  ${week.date}: 铸造ByOrder=${week.mintedBTCDByOrder.toFixed(4)}, 销毁ByOrder=${week.burnedBTCDByOrder.toFixed(4)}, 净流通ByOrder=${week.netValueByOrder.toFixed(4)}`);
+      });
+
+      // 转换为数组并按日期排序（用于趋势图）
+      const monthlyBtcdArray = Array.from(monthlyBtcdStats.entries())
+      .map(([timestamp, data]) => ({
+        date: formatTimestampDisplay(timestamp, 'month'),
+        timestamp,
+        mintedBTCD: data.mintedBTCD,
+        burnedBTCD: data.burnedBTCD,
+        mintedBTCDByOrder: data.mintedBTCDByOrder,
+        burnedBTCDByOrder: data.burnedBTCDByOrder,
+        mintedBTCDByUSDT: data.mintedBTCDByUSDT,
+        burnedBTCDByUSDT: data.burnedBTCDByUSDT,
+        netValue: data.netValue,
+        netValueByOrder: data.netValueByOrder,
+      }))
+      .sort((a, b) => a.timestamp - b.timestamp);
+
+      // 打印每月 BTCD 流通量统计
+      console.log(`\n===== 每月 BTCD 流通量统计 (共 ${monthlyBtcdArray.length} 月) =====`);
+      monthlyBtcdArray.slice(-7).reverse().forEach(month => {
+        console.log(`  ${month.date}: 铸造ByOrder=${month.mintedBTCDByOrder.toFixed(4)}, 销毁ByOrder=${month.burnedBTCDByOrder.toFixed(4)}, 净流通ByOrder=${month.netValueByOrder.toFixed(4)}`);
+      });
 
 
       // 显示前5条记录

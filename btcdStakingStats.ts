@@ -8,6 +8,7 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { ethers } from 'ethers';
+import { timestampToStr, topicToAddress } from './util';
 const fs = require('fs');
 
 
@@ -116,21 +117,6 @@ interface StakingEvent {
   endTime?: number;
   // StakeExtended 事件数据
   newEndTime?: number;
-}
-
-/**
- * 将时间戳转换为可读字符串
- */
-function timestampToStr(timestamp: number): string {
-  if (!timestamp || timestamp === 0) return '';
-  return new Date(timestamp * 1000).toISOString();
-}
-
-/**
- * 将 topic 转换为地址格式
- */
-function topicToAddress(topic: string): string {
-  return '0x' + topic.slice(26).toLowerCase();
 }
 
 /**
@@ -543,7 +529,7 @@ async function fetchStakingDetailsWithMulticall(
   ];
 
   console.log(`\n使用 Multicall3 获取 ${stakingContracts.length} 个 Staking 合约的详细信息...`);
-  console.log(`Multicall3 地址: ${MULTICALL3_ADDRESS}`);
+  // console.log(`Multicall3 地址: ${MULTICALL3_ADDRESS}`);
   console.log(`每批次处理: ${MULTICALL_BATCH_SIZE} 个合约`);
 
   // 分批处理
@@ -901,7 +887,8 @@ async function main() {
 
   // 只有eco链需要获取Token Transfer事件（为了解决漏洞，统一将旧质押合约都迁移到新质押合约，质押资产通过Transfer转移）
   if (network == 'eco-prod') {
-    if (tokenTransferStartBlock <= currentBlock && tokenAddresses.length > 0) {
+    const tokenTransferEndBlock = 3000000;
+    if (tokenTransferStartBlock < tokenTransferEndBlock && tokenAddresses.length > 0) {
       console.log(hasExistingTokenTransfers
         ? `\n增量获取 Token Transfer...`
         : `\n首次获取全部 Token Transfer 历史数据...`);
