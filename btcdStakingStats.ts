@@ -1030,6 +1030,10 @@ async function main() {
     totalActiveEth: totalActiveEth,
     totalActiveToken1: totalActiveToken1,
     totalActiveToken2: totalActiveToken2,
+    // 已过期质押总量
+    totalExpiredEth: expiredStakings.reduce((sum, r) => sum + parseFloat(r.details?.ethAmount || '0'), 0),
+    totalExpiredToken1: expiredStakings.reduce((sum, r) => sum + parseFloat(r.details?.token1Amount || '0'), 0),
+    totalExpiredToken2: expiredStakings.reduce((sum, r) => sum + parseFloat(r.details?.token2Amount || '0'), 0),
     // 历史累计质押总量
     totalEth: totalActiveEth + totalEthWithdrawnAmount,
     totalToken1: totalActiveToken1 + totalToken1WithdrawnAmount,
@@ -1057,6 +1061,10 @@ async function main() {
   console.log(`  Native Token: ${stats.totalActiveEth.toFixed(8)}`);
   console.log(`  Token1: ${stats.totalActiveToken1.toFixed(4)}`);
   console.log(`  Token2: ${stats.totalActiveToken2.toFixed(4)}`);
+  console.log(`\n===== 已过期质押总量 =====`);
+  console.log(`  Native Token: ${stats.totalExpiredEth.toFixed(8)}`);
+  console.log(`  Token1: ${stats.totalExpiredToken1.toFixed(4)}`);
+  console.log(`  Token2: ${stats.totalExpiredToken2.toFixed(4)}`);
   console.log(`\n===== 历史累计质押总量 =====`);
   console.log(`  Native Token: ${stats.totalEth.toFixed(8)}`);
   console.log(`  Token1: ${stats.totalToken1.toFixed(4)}`);
