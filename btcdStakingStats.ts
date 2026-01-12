@@ -845,11 +845,20 @@ async function main() {
   let totalStakedEvents = 0;
   let totalWithdrawnEvents = 0;
   let totalExtendedEvents = 0;
+  let totalEthWithdrawnAmount = 0;
+  let totalToken1WithdrawnAmount = 0;
+  let totalToken2WithdrawnAmount = 0;
   for (const record of allRecords) {
     if (record.events) {
+      let withdrawnEvents = record.events.filter(e => e.type === 'Withdrawn');
+
       totalStakedEvents += record.events.filter(e => e.type === 'Staked').length;
-      totalWithdrawnEvents += record.events.filter(e => e.type === 'Withdrawn').length;
       totalExtendedEvents += record.events.filter(e => e.type === 'StakeExtended').length;
+      totalWithdrawnEvents += withdrawnEvents.length;
+
+      totalEthWithdrawnAmount += withdrawnEvents.reduce((sum, e) => sum + parseFloat(e.ethAmount || '0'), 0);
+      totalToken1WithdrawnAmount += withdrawnEvents.reduce((sum, e) => sum + parseFloat(e.token1Amount || '0'), 0);
+      totalToken2WithdrawnAmount += withdrawnEvents.reduce((sum, e) => sum + parseFloat(e.token2Amount || '0'), 0);
     }
   }
 
@@ -984,13 +993,23 @@ async function main() {
   }
 
   // 6. 计算统计数据
-  const activeStakings = allRecords.filter(r => r.details?.isActive === true);
+  // const activeStakings = allRecords.filter(r => r.details?.isActive === true);
+  const activeStakings = allRecords.filter(r => {
+    const ethAmount = parseFloat(r.details?.ethAmount || '0');
+    const token1Amount = parseFloat(r.details?.token1Amount || '0');
+    const token2Amount = parseFloat(r.details?.token2Amount || '0');
+    return ethAmount !== 0 || token1Amount !== 0 || token2Amount !== 0;
+  });
   const nowTimestamp = Math.floor(Date.now() / 1000);
   const expiredStakings = allRecords.filter(r =>
     r.details?.isActive === true &&
     r.details?.endTime > 0 &&
     r.details?.endTime < nowTimestamp
   );
+
+  let totalActiveEth = activeStakings.reduce((sum, r) => sum + parseFloat(r.details?.ethAmount || '0'), 0)
+  let totalActiveToken1 = activeStakings.reduce((sum, r) => sum + parseFloat(r.details?.token1Amount || '0'), 0)
+  let totalActiveToken2 = activeStakings.reduce((sum, r) => sum + parseFloat(r.details?.token2Amount || '0'), 0)
 
   const stats = {
     totalStakingContracts: allRecords.length,
@@ -1007,14 +1026,14 @@ async function main() {
     newTokenTransfersCount: newTokenTransfers.length,
     transferInEvents: totalTransferIn,
     transferOutEvents: totalTransferOut,
-    // 活跃质押总量
-    totalActiveEth: activeStakings.reduce((sum, r) => sum + parseFloat(r.details?.ethAmount || '0'), 0),
-    totalActiveToken1: activeStakings.reduce((sum, r) => sum + parseFloat(r.details?.token1Amount || '0'), 0),
-    totalActiveToken2: activeStakings.reduce((sum, r) => sum + parseFloat(r.details?.token2Amount || '0'), 0),
+    // 当前已质押总量
+    totalActiveEth: totalActiveEth,
+    totalActiveToken1: totalActiveToken1,
+    totalActiveToken2: totalActiveToken2,
     // 历史累计质押总量
-    totalEth: allRecords.reduce((sum, r) => sum + parseFloat(r.details?.ethAmount || '0'), 0),
-    totalToken1: allRecords.reduce((sum, r) => sum + parseFloat(r.details?.token1Amount || '0'), 0),
-    totalToken2: allRecords.reduce((sum, r) => sum + parseFloat(r.details?.token2Amount || '0'), 0),
+    totalEth: totalActiveEth + totalEthWithdrawnAmount,
+    totalToken1: totalActiveToken1 + totalToken1WithdrawnAmount,
+    totalToken2: totalActiveToken2 + totalToken2WithdrawnAmount,
     firstStakingBlock: allRecords.length > 0 ? allRecords[0].blockNumber : null,
     lastStakingBlock: allRecords.length > 0 ? allRecords[allRecords.length - 1].blockNumber : null
   };
@@ -1034,7 +1053,7 @@ async function main() {
   console.log(`  本次新增 Transfer: ${stats.newTokenTransfersCount}`);
   console.log(`  TransferIn (转入 Staking): ${stats.transferInEvents}`);
   console.log(`  TransferOut (转出 Staking): ${stats.transferOutEvents}`);
-  console.log(`\n===== 活跃质押总量 =====`);
+  console.log(`\n===== 当前已质押总量 =====`);
   console.log(`  Native Token: ${stats.totalActiveEth.toFixed(8)}`);
   console.log(`  Token1: ${stats.totalActiveToken1.toFixed(4)}`);
   console.log(`  Token2: ${stats.totalActiveToken2.toFixed(4)}`);
