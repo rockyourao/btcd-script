@@ -776,19 +776,8 @@ async function main() {
   console.log(`Token1: ${stakingTokens.token1}`);
   console.log(`Token2: ${stakingTokens.token2}`);
 
-  // 5. 获取所有 Staking 合约的详细信息（每次都更新）
-  const stakingContracts = allRecords.map(r => r.stakingContract);
-  const detailsMap = await fetchStakingDetailsWithMulticall(provider, stakingContracts);
-
-  // 将详情附加到记录中
-  for (const record of allRecords) {
-    const details = detailsMap.get(record.stakingContract.toLowerCase());
-    if (details) {
-      record.details = details;
-    }
-  }
-
   // 5. 获取事件（增量更新）
+  const stakingContracts = allRecords.map(r => r.stakingContract);
   const validContractsSet = new Set(stakingContracts.map(c => c.toLowerCase()));
 
   // 确定事件查询的起始区块
@@ -824,6 +813,36 @@ async function main() {
       newEventsMap.set(contractAddr, []);
     }
     newEventsMap.get(contractAddr)!.push(event);
+  }
+
+  // 6. 获取有更新的 Staking 合约的详细信息（只更新新合约和有新事件的合约）
+  const contractsToUpdate = new Set<string>();
+  // 添加新创建的合约
+  for (const newRecord of newRecords) {
+    contractsToUpdate.add(newRecord.stakingContract.toLowerCase());
+  }
+  // 添加有新事件的合约
+  for (const contractAddr of newEventsMap.keys()) {
+    contractsToUpdate.add(contractAddr);
+  }
+
+  const contractsToUpdateArray = Array.from(contractsToUpdate);
+  if (contractsToUpdateArray.length > 0) {
+    console.log(`\n获取 ${contractsToUpdateArray.length} 个合约的详细信息（新合约: ${newRecords.length}, 有新事件: ${newEventsMap.size}）...`);
+    const detailsMap = await fetchStakingDetailsWithMulticall(provider, contractsToUpdateArray);
+
+    // 将详情附加到需要更新的记录中
+    for (const record of allRecords) {
+      const contractAddr = record.stakingContract.toLowerCase();
+      if (contractsToUpdate.has(contractAddr)) {
+        const details = detailsMap.get(contractAddr);
+        if (details) {
+          record.details = details;
+        }
+      }
+    }
+  } else {
+    console.log(`\n没有需要更新详情的合约`);
   }
 
   // 合并新旧事件并附加到记录中
