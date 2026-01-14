@@ -263,7 +263,7 @@ async function main() {
 
     const transfers = [...existingTransfers, ...uniqueNewTransfers];
     // 按区块号排序
-    transfers.sort((a, b) => a.blockNumber - b.blockNumber);
+    transfers.sort((a, b) => b.blockNumber - a.blockNumber);
 
     console.log(`新增 ${uniqueNewTransfers.length} 条记录`);
 
@@ -367,6 +367,7 @@ async function main() {
         t => t.from.toLowerCase() !== ISSUER_ADDRESS &&
              t.to.toLowerCase() !== ISSUER_ADDRESS
       );
+      usdtTransfers.sort((a, b) => b.blockNumber - a.blockNumber);
 
       const stats = {
         totalBTCDMinted: (ethers as any).utils.formatUnits(totalMinted, TOKEN_DECIMALS),
