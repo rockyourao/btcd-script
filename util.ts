@@ -81,6 +81,32 @@ export function getUnitStartTimestamp(timestamp: number, unit: 'day' | 'week' | 
 
 
 /**
+ * 将数字格式化为千分位表示法
+ * @param value 数字或字符串
+ * @param decimals 小数位数，默认为2
+ * @returns 格式化后的字符串
+ */
+export function formatWithCommas(value: number | string, decimals: number = 2): string {
+  const num = typeof value === 'string' ? parseFloat(value) : value;
+  if (isNaN(num)) return '0';
+
+  return num.toLocaleString('en-US', {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals
+  });
+}
+
+/**
+ * 格式化月份和日期，日期补齐为2位宽度（一位数字前加空格）
+ */
+function formatMonthDay(dt: Date): string {
+  const month = dt.toLocaleDateString('en-US', { month: 'short' });
+  const day = dt.getDate();
+  const dayStr = day < 10 ? ` ${day}` : `${day}`;
+  return `${month} ${dayStr}`;
+}
+
+/**
  * 格式化时间戳为可读的日期字符串
  * @param timestamp 时间戳（秒）
  * @param unit 时间单位: 'day' | 'week' | 'month'，默认为'week'
@@ -91,16 +117,10 @@ export function formatTimestampDisplay(timestamp: number, unit: 'day' | 'week' |
 
   switch(unit) {
     case 'day':
-      return dt.toLocaleDateString('en-US', {
-        month: 'short',
-        day: 'numeric'
-      });
+      return formatMonthDay(dt);
 
     case 'week':
-      return `Week of ${dt.toLocaleDateString('en-US', {
-        month: 'short',
-        day: 'numeric'
-      })}`;
+      return `Week of ${formatMonthDay(dt)}`;
 
     case 'month':
       return dt.toLocaleDateString('en-US', {
@@ -109,10 +129,7 @@ export function formatTimestampDisplay(timestamp: number, unit: 'day' | 'week' |
       });
 
     default:
-      return dt.toLocaleDateString('en-US', {
-        month: 'short',
-        day: 'numeric'
-      });
+      return formatMonthDay(dt);
   }
 }
 

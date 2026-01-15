@@ -19,7 +19,7 @@ const fs = require('fs');
 import {
   TIMESTAMP_BATCH_SIZE
 } from './config';
-import { formatTimestampDisplay, getUnitStartTimestamp } from './util';
+import { formatTimestampDisplay, formatWithCommas, getUnitStartTimestamp } from './util';
 
 // 从命令行参数解析 network
 function getNetworkFromArgs(): string {
@@ -380,14 +380,14 @@ async function main() {
         totalBTCDCount: transfers.length,
       };
 
-      console.log(`总铸造量: ${stats.totalBTCDMinted} BTCD`);
-      console.log(`总销毁量: ${stats.totalBTCDBurned} BTCD`);
-      console.log(`净流通量: ${stats.totalBTCDNetValue} BTCD`);
+      console.log(`总铸造量: ${formatWithCommas(stats.totalBTCDMinted, 2)} BTCD`);
+      console.log(`总销毁量: ${formatWithCommas(stats.totalBTCDBurned, 2)} BTCD`);
+      console.log(`净流通量: ${formatWithCommas(stats.totalBTCDNetValue, 2)} BTCD`);
       console.log(`\n===== 通过USDT 铸造/销毁 的BTCD统计 =====`);
-      console.log(`USDT铸造量: ${stats.usdtBTCDMinted} BTCD`);
-      console.log(`USDT销毁量: ${stats.usdtBTCDBurned} BTCD`);
-      console.log(`USDT净流通: ${stats.usdtBTCDNetValue} BTCD`);
-      console.log(`USDT记录数: ${stats.usdtBTCDCount}`);
+      console.log(`USDT铸造量: ${formatWithCommas(stats.usdtBTCDMinted, 2)} BTCD`);
+      console.log(`USDT销毁量: ${formatWithCommas(stats.usdtBTCDBurned, 2)} BTCD`);
+      console.log(`USDT净流通: ${formatWithCommas(stats.usdtBTCDNetValue, 2)} BTCD`);
+      console.log(`USDT记录数: ${formatWithCommas(stats.usdtBTCDCount, 0)}`);
 
       // 转换为数组并按日期排序（用于趋势图）
       const dailyBtcdArray = Array.from(dailyBtcdStats.entries())
@@ -408,7 +408,7 @@ async function main() {
       // 打印每日借出统计
       console.log(`\n===== 每日 BTCD 流通量统计 (共 ${dailyBtcdArray.length} 天) =====`);
       dailyBtcdArray.slice(-7).reverse().forEach(day => {
-        console.log(`  ${day.date}: 铸造ByOrder=${day.mintedBTCDByOrder.toFixed(4)}, 销毁ByOrder=${day.burnedBTCDByOrder.toFixed(4)}, 净流通ByOrder=${day.netValueByOrder.toFixed(4)}`);
+        console.log(`  ${day.date}: 铸造ByOrder=${formatWithCommas(day.mintedBTCDByOrder, 4)}, 销毁ByOrder=${formatWithCommas(day.burnedBTCDByOrder, 4)}, 净流通ByOrder=${formatWithCommas(day.netValueByOrder, 4)}`);
       });
 
       // 转换为数组并按日期排序（用于趋势图）
@@ -430,7 +430,7 @@ async function main() {
       // 打印每周 BTCD 流通量统计
       console.log(`\n===== 每周 BTCD 流通量统计 (共 ${weeklyBtcdArray.length} 周) =====`);
       weeklyBtcdArray.slice(-7).reverse().forEach(week => {
-        console.log(`  ${week.date}: 铸造ByOrder=${week.mintedBTCDByOrder.toFixed(4)}, 销毁ByOrder=${week.burnedBTCDByOrder.toFixed(4)}, 净流通ByOrder=${week.netValueByOrder.toFixed(4)}`);
+        console.log(`  ${week.date}: 铸造ByOrder=${formatWithCommas(week.mintedBTCDByOrder, 4)}, 销毁ByOrder=${formatWithCommas(week.burnedBTCDByOrder, 4)}, 净流通ByOrder=${formatWithCommas(week.netValueByOrder, 4)}`);
       });
 
       // 转换为数组并按日期排序（用于趋势图）
@@ -452,7 +452,7 @@ async function main() {
       // 打印每月 BTCD 流通量统计
       console.log(`\n===== 每月 BTCD 流通量统计 (共 ${monthlyBtcdArray.length} 月) =====`);
       monthlyBtcdArray.slice(-7).reverse().forEach(month => {
-        console.log(`  ${month.date}: 铸造ByOrder=${month.mintedBTCDByOrder.toFixed(4)}, 销毁ByOrder=${month.burnedBTCDByOrder.toFixed(4)}, 净流通ByOrder=${month.netValueByOrder.toFixed(4)}`);
+        console.log(`  ${month.date}: 铸造ByOrder=${formatWithCommas(month.mintedBTCDByOrder, 4)}, 销毁ByOrder=${formatWithCommas(month.burnedBTCDByOrder, 4)}, 净流通ByOrder=${formatWithCommas(month.netValueByOrder, 4)}`);
       });
 
 

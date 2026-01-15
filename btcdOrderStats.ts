@@ -14,7 +14,7 @@
 const { ethers } = require('ethers');
 const fs = require('fs');
 
-import { formatBtc, formatTimestampDisplay, getBlockTimestamps, getUnitStartTimestamp, timestampToStr, topicToAddress } from './util';
+import { formatBtc, formatTimestampDisplay, formatWithCommas, getBlockTimestamps, getUnitStartTimestamp, timestampToStr, topicToAddress } from './util';
 
 // 从命令行参数解析 network
 function getNetworkFromArgs(): string {
@@ -851,18 +851,18 @@ async function main() {
 
 
   console.log(`\n===== 订单统计 =====`);
-  console.log(`总订单数: ${stats.totalOrders}`);
+  console.log(`总订单数: ${formatWithCommas(stats.totalOrders, 0)}`);
   const validOrdersPercent = stats.totalOrders > 0 ? ((stats.validOrders / stats.totalOrders) * 100).toFixed(2) : '0.00';
-  console.log(`有效订单数: ${stats.validOrders} (${validOrdersPercent}%)`);
+  console.log(`有效订单数: ${formatWithCommas(stats.validOrders, 0)} (${validOrdersPercent}%)`);
   const discountOrdersPercent = stats.validOrders > 0 ? ((stats.discountOrders / stats.validOrders) * 100).toFixed(2) : '0.00';
-  console.log(`使用Discount订单数: ${stats.discountOrders} (${discountOrdersPercent}%)`);
+  console.log(`使用Discount订单数: ${formatWithCommas(stats.discountOrders, 0)} (${discountOrdersPercent}%)`);
   // console.log(`借款订单 (Borrow): ${stats.borrowOrders}`);
   // console.log(`出借订单 (Lend): ${stats.lendOrders}`);
-  console.log(`累计总抵押品: ${stats.totalCollateral.toFixed(2)} BTC`);
-  console.log(`累计BTCD铸造总量: ${stats.totalTokenAmount.toFixed(2)}`);
-  console.log(`活跃订单铸造BTCD数量: ${stats.activeTokenAmount.toFixed(2)}`);
-  console.log(`订单铸造BTCD总量（活跃订单 + 已清算订单）: ${stats.currentMintedBTCD.toFixed(2)}`);
-  console.log(`锁定在订单中的BTCD总量: ${stats.lockedInOrdersBTCD.toFixed(2)}`);
+  console.log(`累计总抵押 BTC: ${formatWithCommas(stats.totalCollateral, 2)} BTC`);
+  console.log(`累计BTCD铸造总量: ${formatWithCommas(stats.totalTokenAmount, 2)}`);
+  console.log(`活跃订单铸造BTCD数量: ${formatWithCommas(stats.activeTokenAmount, 2)}`);
+  console.log(`订单铸造BTCD总量（活跃订单 + 已清算订单）: ${formatWithCommas(stats.currentMintedBTCD, 2)}`);
+  console.log(`锁定在订单中的BTCD总量: ${formatWithCommas(stats.lockedInOrdersBTCD, 2)}`);
 
 
   if (stats.firstOrderTime) {
@@ -873,35 +873,35 @@ async function main() {
 
   // 显示当前已借出统计
   console.log(`\n===== 当前已借出统计 =====`);
-  console.log(`  订单数: ${stats.currentBorrowed.count}`);
-  console.log(`  抵押品: ${stats.currentBorrowed.collateral.toFixed(8)} BTC`);
-  console.log(`  代币数量: ${stats.currentBorrowed.tokenAmount.toFixed(2)}`);
+  console.log(`  订单数: ${formatWithCommas(stats.currentBorrowed.count, 0)}`);
+  console.log(`  抵押 BTC: ${formatWithCommas(stats.currentBorrowed.collateral, 8)} BTC`);
+  console.log(`  BTCD 数量: ${formatWithCommas(stats.currentBorrowed.tokenAmount, 2)}`);
 
   // 显示已清算订单统计
   console.log(`\n===== 已清算订单统计 =====`);
-  console.log(`  订单数: ${stats.liquidatedStats.count}`);
-  console.log(`  抵押品: ${stats.liquidatedStats.collateral.toFixed(8)} BTC`);
-  console.log(`  代币数量: ${stats.liquidatedStats.tokenAmount.toFixed(2)}`);
+  console.log(`  订单数: ${formatWithCommas(stats.liquidatedStats.count, 0)}`);
+  console.log(`  抵押 BTC: ${formatWithCommas(stats.liquidatedStats.collateral, 8)} BTC`);
+  console.log(`  BTCD数量: ${formatWithCommas(stats.liquidatedStats.tokenAmount, 2)}`);
 
   // 显示到期未还款订单统计
   console.log(`\n===== 到期未还款订单统计 =====`);
-  console.log(`  订单数: ${stats.overdueStats.count}`);
-  console.log(`  抵押品: ${stats.overdueStats.collateral.toFixed(8)} BTC`);
-  console.log(`  代币数量: ${stats.overdueStats.tokenAmount.toFixed(2)}`);
+  console.log(`  订单数: ${formatWithCommas(stats.overdueStats.count, 0)}`);
+  console.log(`  抵押 BTC: ${formatWithCommas(stats.overdueStats.collateral, 8)} BTC`);
+  console.log(`  BTCD数量: ${formatWithCommas(stats.overdueStats.tokenAmount, 2)}`);
 
   // 显示状态统计
   console.log(`\n===== 订单状态分布 =====`);
-  console.log(`  CREATED (已创建): ${stats.statusStats.created}`);
-  console.log(`  TAKEN (已接单): ${stats.statusStats.taken}`);
-  console.log(`  BORROWER_PROOF_SUBMITTED (借款人已提交BTC锁定证明): ${stats.statusStats.borrowerProofSubmitted}`);
-  console.log(`  BORROWER_PAY_ARBITRATOR_SUBMITTED (借款人已提交仲裁员费用证明): ${stats.statusStats.borrowerPayArbitratorSubmitted}`);
-  console.log(`  BORROWED (已借款): ${stats.statusStats.borrowed}`);
-  console.log(`  REPAID (已还款): ${stats.statusStats.repaid}`);
-  console.log(`  LENDER_PROOF_SUBMITTED (出借人已提交还款证明): ${stats.statusStats.lenderProofSubmitted}`);
-  console.log(`  LENDER_PAYMENT_CONFIRMED (出借人付款已确认): ${stats.statusStats.lenderPaymentConfirmed}`);
-  console.log(`  ARBITRATION_REQUESTED (已请求仲裁): ${stats.statusStats.arbitrationRequested}`);
-  console.log(`  CLOSED (已关闭): ${stats.statusStats.closed}`);
-  console.log(`  LIQUIDATED (已清算): ${stats.statusStats.liquidated}`);
+  console.log(`  CREATED (已创建): ${formatWithCommas(stats.statusStats.created, 0)}`);
+  console.log(`  TAKEN (已接单): ${formatWithCommas(stats.statusStats.taken, 0)}`);
+  console.log(`  BORROWER_PROOF_SUBMITTED (借款人已提交BTC锁定证明): ${formatWithCommas(stats.statusStats.borrowerProofSubmitted, 0)}`);
+  console.log(`  BORROWER_PAY_ARBITRATOR_SUBMITTED (借款人已提交仲裁员费用证明): ${formatWithCommas(stats.statusStats.borrowerPayArbitratorSubmitted, 0)}`);
+  console.log(`  BORROWED (已借款): ${formatWithCommas(stats.statusStats.borrowed, 0)}`);
+  console.log(`  REPAID (已还款): ${formatWithCommas(stats.statusStats.repaid, 0)}`);
+  console.log(`  LENDER_PROOF_SUBMITTED (出借人已提交还款证明): ${formatWithCommas(stats.statusStats.lenderProofSubmitted, 0)}`);
+  console.log(`  LENDER_PAYMENT_CONFIRMED (出借人付款已确认): ${formatWithCommas(stats.statusStats.lenderPaymentConfirmed, 0)}`);
+  console.log(`  ARBITRATION_REQUESTED (已请求仲裁): ${formatWithCommas(stats.statusStats.arbitrationRequested, 0)}`);
+  console.log(`  CLOSED (已关闭): ${formatWithCommas(stats.statusStats.closed, 0)}`);
+  console.log(`  LIQUIDATED (已清算): ${formatWithCommas(stats.statusStats.liquidated, 0)}`);
 
   if (allRecords.length > 0) {
     // 保存到文件
@@ -915,8 +915,8 @@ async function main() {
       // overdueOrders: overdueOrders
     }, null, 2));
     console.log(`\n记录已保存到 ${outputFile}`);
-    console.log(`本次新增订单: ${newRecords.length} 条`);
-    console.log(`本次更新状态: ${updatedDetailsMap.size} 条`);
+    console.log(`本次新增订单: ${formatWithCommas(newRecords.length, 0)} 条`);
+    console.log(`本次更新状态: ${formatWithCommas(updatedDetailsMap.size, 0)} 条`);
   }
 
   // 显示脚本执行总时间

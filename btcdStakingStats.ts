@@ -8,7 +8,7 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { ethers } from 'ethers';
-import { timestampToStr, topicToAddress } from './util';
+import { formatWithCommas, timestampToStr, topicToAddress } from './util';
 const fs = require('fs');
 
 
@@ -1062,32 +1062,32 @@ async function main() {
   };
 
   console.log(`\n===== Staking 统计 =====`);
-  console.log(`总 Staking 合约数: ${stats.totalStakingContracts}`);
-  console.log(`活跃 Staking 数: ${stats.activeStakings}`);
-  console.log(`已到期 Staking 数: ${stats.expiredStakings}`);
+  console.log(`总 Staking 合约数: ${formatWithCommas(stats.totalStakingContracts, 0)}`);
+  console.log(`活跃 Staking 数: ${formatWithCommas(stats.activeStakings, 0)}`);
+  console.log(`已到期 Staking 数: ${formatWithCommas(stats.expiredStakings, 0)}`);
   console.log(`\n===== Staking 事件统计 =====`);
-  console.log(`  总事件数: ${stats.totalEvents}`);
-  console.log(`  本次新增事件: ${stats.newEventsCount}`);
-  console.log(`  Staked 事件: ${stats.stakedEvents}`);
-  console.log(`  Withdrawn 事件: ${stats.withdrawnEvents}`);
-  console.log(`  StakeExtended 事件: ${stats.extendedEvents}`);
+  console.log(`  总事件数: ${formatWithCommas(stats.totalEvents, 0)}`);
+  console.log(`  本次新增事件: ${formatWithCommas(stats.newEventsCount, 0)}`);
+  console.log(`  Staked 事件: ${formatWithCommas(stats.stakedEvents, 0)}`);
+  console.log(`  Withdrawn 事件: ${formatWithCommas(stats.withdrawnEvents, 0)}`);
+  console.log(`  StakeExtended 事件: ${formatWithCommas(stats.extendedEvents, 0)}`);
   console.log(`\n===== Token Transfer 统计 =====`);
-  console.log(`  总 Transfer 数: ${stats.totalTokenTransfers}`);
-  console.log(`  本次新增 Transfer: ${stats.newTokenTransfersCount}`);
-  console.log(`  TransferIn (转入 Staking): ${stats.transferInEvents}`);
-  console.log(`  TransferOut (转出 Staking): ${stats.transferOutEvents}`);
+  console.log(`  总 Transfer 数: ${formatWithCommas(stats.totalTokenTransfers, 0)}`);
+  console.log(`  本次新增 Transfer: ${formatWithCommas(stats.newTokenTransfersCount, 0)}`);
+  console.log(`  TransferIn (转入 Staking): ${formatWithCommas(stats.transferInEvents, 0)}`);
+  console.log(`  TransferOut (转出 Staking): ${formatWithCommas(stats.transferOutEvents, 0)}`);
   console.log(`\n===== 当前已质押总量 =====`);
-  console.log(`  Native Token: ${stats.totalActiveEth.toFixed(8)}`);
-  console.log(`  Token1: ${stats.totalActiveToken1.toFixed(4)}`);
-  console.log(`  Token2: ${stats.totalActiveToken2.toFixed(4)}`);
+  console.log(`  Native Token: ${formatWithCommas(stats.totalActiveEth, 8)}`);
+  console.log(`  Token1: ${formatWithCommas(stats.totalActiveToken1, 4)}`);
+  console.log(`  Token2: ${formatWithCommas(stats.totalActiveToken2, 4)}`);
   console.log(`\n===== 已过期质押总量 =====`);
-  console.log(`  Native Token: ${stats.totalExpiredEth.toFixed(8)}`);
-  console.log(`  Token1: ${stats.totalExpiredToken1.toFixed(4)}`);
-  console.log(`  Token2: ${stats.totalExpiredToken2.toFixed(4)}`);
+  console.log(`  Native Token: ${formatWithCommas(stats.totalExpiredEth, 8)}`);
+  console.log(`  Token1: ${formatWithCommas(stats.totalExpiredToken1, 4)}`);
+  console.log(`  Token2: ${formatWithCommas(stats.totalExpiredToken2, 4)}`);
   console.log(`\n===== 历史累计质押总量 =====`);
-  console.log(`  Native Token: ${stats.totalEth.toFixed(8)}`);
-  console.log(`  Token1: ${stats.totalToken1.toFixed(4)}`);
-  console.log(`  Token2: ${stats.totalToken2.toFixed(4)}`);
+  console.log(`  Native Token: ${formatWithCommas(stats.totalEth, 8)}`);
+  console.log(`  Token1: ${formatWithCommas(stats.totalToken1, 4)}`);
+  console.log(`  Token2: ${formatWithCommas(stats.totalToken2, 4)}`);
 
   if (allRecords.length > 0) {
     // 保存到文件
