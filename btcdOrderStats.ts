@@ -622,6 +622,7 @@ async function main() {
     lendOrders: allRecords.filter(r => r.orderType === OrderType.Lend).length,
     // 只统计 borrowedTime > 0 的订单（实际发生借款的订单）
     totalCollateral: allRecords.filter(r => r.details?.borrowedTime > 0).reduce((sum, r) => sum + parseFloat(r.details.realBtcAmount), 0),
+    totalCollateralDiscount: allRecords.filter(r => r.details?.borrowedTime > 0).reduce((sum, r) => sum + parseFloat(r.collateral), 0),
     totalTokenAmount: allRecords.filter(r => r.details?.borrowedTime > 0).reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0),
     // 当前活跃的统计（status 不是 CLOSED 的订单）
     activeTokenAmount: allRecords.filter(r => r.details?.status !== OrderStatus.CLOSED).reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0),
@@ -639,6 +640,7 @@ async function main() {
     currentBorrowed: {
       count: borrowedOrders.length,
       collateral: borrowedOrders.reduce((sum, r) => sum + parseFloat(r.details.realBtcAmount), 0),
+      collateralDiscount: borrowedOrders.reduce((sum, r) => sum + parseFloat(r.collateral), 0),
       tokenAmount: borrowedOrders.reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0)
     },
     // 已清算订单统计
@@ -796,6 +798,7 @@ async function main() {
   // 打印每周借出订单统计
   console.log(`\n===== 每周借出订单统计 (共 ${weeklyBorrowedArray.length} 周) =====`);
   weeklyBorrowedArray.slice(-7).reverse().forEach(week => {
+  // weeklyBorrowedArray.reverse().forEach(week => {
     console.log(`  ${week.date}: 订单数=${week.count}, BTC=${week.totalRealBtc.toFixed(4)}, BTCD=${week.totalTokenAmount.toFixed(2)}`);
   });
 
@@ -813,6 +816,7 @@ async function main() {
   // 打印每周BTCD统计
   console.log(`\n===== 每周 BTCD 增量统计 (共 ${weeklyBtcdArray.length} 周) =====`);
   weeklyBtcdArray.slice(-7).reverse().forEach(week => {
+  // weeklyBtcdArray.reverse().forEach(week => {
     console.log(`  ${week.date}: BTC=${week.totalRealBtc.toFixed(4)}, BTCD=${week.totalTokenAmount.toFixed(2)}`);
   });
 
@@ -849,6 +853,103 @@ async function main() {
     console.log(`  ${month.date}: BTC=${month.totalRealBtc.toFixed(4)}, BTCD=${month.totalTokenAmount.toFixed(2)}`);
   });
 
+  // ===== 用户统计 (基于 details.borrower) =====
+  // 零地址常量
+  const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
+
+  // 筛选有效的用户订单（borrower 不为空且不是零地址，且已被 take）
+  const userOrders = allRecords.filter(r =>
+    r.details?.borrower &&
+    r.details.borrower !== ZERO_ADDRESS &&
+    r.details.takenTime > 0
+  );
+
+  // 1. 统计用户总数 (去重)
+  const uniqueUsers = new Set(userOrders.map(r => r.details!.borrower.toLowerCase()));
+  const totalUsers = uniqueUsers.size;
+
+  // 2. 统计每天/每周用户增加数
+  // 按用户首次 take 订单时间分组
+  const userFirstTakenTime: Map<string, number> = new Map();
+  userOrders.forEach(r => {
+    const user = r.details!.borrower.toLowerCase();
+    const takenTime = r.details!.takenTime;
+    const existing = userFirstTakenTime.get(user);
+    if (!existing || takenTime < existing) {
+      userFirstTakenTime.set(user, takenTime);
+    }
+  });
+
+  // 按天统计新用户
+  const dailyNewUsers: Map<number, Set<string>> = new Map();
+  const weeklyNewUsers: Map<number, Set<string>> = new Map();
+
+  userFirstTakenTime.forEach((firstTakenTime, user) => {
+    const dayTimestamp = getUnitStartTimestamp(firstTakenTime, 'day');
+    const weekTimestamp = getUnitStartTimestamp(firstTakenTime, 'week');
+
+    if (!dailyNewUsers.has(dayTimestamp)) {
+      dailyNewUsers.set(dayTimestamp, new Set());
+    }
+    dailyNewUsers.get(dayTimestamp)!.add(user);
+
+    if (!weeklyNewUsers.has(weekTimestamp)) {
+      weeklyNewUsers.set(weekTimestamp, new Set());
+    }
+    weeklyNewUsers.get(weekTimestamp)!.add(user);
+  });
+
+  // 转换为数组并按日期排序
+  const dailyNewUsersArray = Array.from(dailyNewUsers.entries())
+    .map(([timestamp, users]) => ({
+      date: formatTimestampDisplay(timestamp, 'day'),
+      timestamp,
+      count: users.size
+    }))
+    .sort((a, b) => a.timestamp - b.timestamp);
+
+  const weeklyNewUsersArray = Array.from(weeklyNewUsers.entries())
+    .map(([timestamp, users]) => ({
+      date: formatTimestampDisplay(timestamp, 'week'),
+      timestamp,
+      count: users.size
+    }))
+    .sort((a, b) => a.timestamp - b.timestamp);
+
+  // 3. 用户 take 订单数排行榜
+  const userOrderCount: Map<string, number> = new Map();
+  userOrders.forEach(r => {
+    const user = r.details!.borrower.toLowerCase();
+    userOrderCount.set(user, (userOrderCount.get(user) || 0) + 1);
+  });
+
+  // 按订单数量降序排序
+  const userOrderRanking = Array.from(userOrderCount.entries())
+    .map(([user, count]) => ({ user, count }))
+    .sort((a, b) => b.count - a.count);
+
+  // 打印用户统计
+  console.log(`\n===== 用户统计 (Borrower) =====`);
+  console.log(`用户总数: ${formatWithCommas(totalUsers, 0)}`);
+  console.log(`用户订单总数: ${formatWithCommas(userOrders.length, 0)}`);
+
+  // 打印每日新增用户
+  console.log(`\n===== 每日新增用户 (共 ${dailyNewUsersArray.length} 天) =====`);
+  dailyNewUsersArray.slice(-7).reverse().forEach(day => {
+    console.log(`  ${day.date}: 新增用户数=${day.count}`);
+  });
+
+  // 打印每周新增用户
+  console.log(`\n===== 每周新增用户 (共 ${weeklyNewUsersArray.length} 周) =====`);
+  weeklyNewUsersArray.reverse().forEach(week => {
+    console.log(`  ${week.date}: 新增用户数=${week.count}`);
+  });
+
+  // 打印用户 take 订单数排行榜 (Top 20)
+  console.log(`\n===== 用户 Take 订单数排行榜 (Top 20) =====`);
+  userOrderRanking.slice(0, 20).forEach((item, index) => {
+    console.log(`  ${(index + 1).toString().padStart(2, ' ')}. ${item.user}: ${formatWithCommas(item.count, 0)} 单`);
+  });
 
   console.log(`\n===== 订单统计 =====`);
   console.log(`总订单数: ${formatWithCommas(stats.totalOrders, 0)}`);
@@ -859,6 +960,7 @@ async function main() {
   // console.log(`借款订单 (Borrow): ${stats.borrowOrders}`);
   // console.log(`出借订单 (Lend): ${stats.lendOrders}`);
   console.log(`累计总抵押 BTC: ${formatWithCommas(stats.totalCollateral, 2)} BTC`);
+  console.log(`累计总抵押 BTC (使用Discount): ${formatWithCommas(stats.totalCollateralDiscount, 2)} BTC`);
   console.log(`累计BTCD铸造总量: ${formatWithCommas(stats.totalTokenAmount, 2)}`);
   console.log(`活跃订单铸造BTCD数量: ${formatWithCommas(stats.activeTokenAmount, 2)}`);
   console.log(`订单铸造BTCD总量（活跃订单 + 已清算订单）: ${formatWithCommas(stats.currentMintedBTCD, 2)}`);
@@ -875,6 +977,7 @@ async function main() {
   console.log(`\n===== 当前已借出统计 =====`);
   console.log(`  订单数: ${formatWithCommas(stats.currentBorrowed.count, 0)}`);
   console.log(`  抵押 BTC: ${formatWithCommas(stats.currentBorrowed.collateral, 8)} BTC`);
+  console.log(`  抵押 BTC (使用Discount): ${formatWithCommas(stats.currentBorrowed.collateralDiscount, 8)} BTC`);
   console.log(`  BTCD 数量: ${formatWithCommas(stats.currentBorrowed.tokenAmount, 2)}`);
 
   // 显示已清算订单统计
@@ -904,15 +1007,25 @@ async function main() {
   console.log(`  LIQUIDATED (已清算): ${formatWithCommas(stats.statusStats.liquidated, 0)}`);
 
   if (allRecords.length > 0) {
+    // 构建用户统计对象
+    const userStats = {
+      totalUsers,
+      totalUserOrders: userOrders.length,
+      dailyNewUsers: dailyNewUsersArray,
+      weeklyNewUsers: weeklyNewUsersArray,
+      userOrderRanking: userOrderRanking.slice(0, 100) // 保存 Top 100
+    };
+
     // 保存到文件
     fs.writeFileSync(outputFile, JSON.stringify({
       stats,
+      userStats,
       contractAddress: LOAN_CONTRACT_ADDRESS,
       currentBlock,
       fetchedDetails: true,
       records: allRecords,
-      // liquidatedOrders: liquidatedOrders,
-      // overdueOrders: overdueOrders
+      liquidatedOrders: liquidatedOrders,
+      overdueOrders: overdueOrders
     }, null, 2));
     console.log(`\n记录已保存到 ${outputFile}`);
     console.log(`本次新增订单: ${formatWithCommas(newRecords.length, 0)} 条`);
