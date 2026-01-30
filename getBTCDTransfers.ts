@@ -83,18 +83,18 @@ async function getAllTransfers(startBlock: number): Promise<{ transfers: Transfe
   console.log(`当前区块高度: ${currentBlock}`);
   console.log(`从区块 ${startBlock} 开始查询...`);
 
-  // ERC20 Transfer 事件签名
-  const transferTopic = (ethers as any).utils.id('Transfer(address,address,uint256)');
-
   console.log(`正在查询 Token: ${TOKEN_ADDRESS}`);
   console.log('正在获取铸造/销毁事件（在 RPC 层面过滤，更快）...');
 
-  // 分批查询避免 RPC 限制
+  // ERC20 Transfer event signature
+  const transferTopic = (ethers as any).utils.id('Transfer(address,address,uint256)');
+
+  // batch query to avoid RPC limit
   const allLogs: any[] = [];
 
-  // 定义两种查询：铸造和销毁
-  // 铸造: from = 零地址
-  // 销毁: to = 零地址
+  // two queries: mint and burn
+  // mint: from = zero address
+  // burn: to = zero address
   const queries = [
     { name: '铸造', topics: [transferTopic, ZERO_ADDRESS_TOPIC, null] },
     { name: '销毁', topics: [transferTopic, null, ZERO_ADDRESS_TOPIC] }

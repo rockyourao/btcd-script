@@ -119,6 +119,9 @@ interface OrderDetails {
     repayDeadLine: number;
     submitRegularProofDeadLine: number;
   };
+  limitedDays: number;          // 订单期限（天）
+  orderPeriod: number;          // 订单实际时长（天）= borrowerRepaidTime - borrowedTime，未还款则为 0
+  orderPeriodStr: string;      // 订单实际时长字符串，如 "12.31天"
   realBtcAmount: string;        // toLenderBtcTx.amount (BTC)
   realBtcAmountRaw: string;     // 原始值 (satoshi)
   useDiscount: boolean;         // collateral == toLenderBtcTx.amount
@@ -138,10 +141,12 @@ const MULTICALL_BATCH_SIZE = 200;
 
 /**
  * 使用 Multicall3 批量获取订单详细信息
+ * @param collateralByOrderId 可选，orderId(lowerCase) -> collateralRaw，用于在内部计算 useDiscount
  */
 async function fetchOrderDetailsWithMulticall(
   provider: any,
-  orderIds: string[]
+  orderIds: string[],
+  collateralByOrderId?: Map<string, string>
 ): Promise<Map<string, OrderDetails>> {
   const orderDetailsMap = new Map<string, OrderDetails>();
   const orderInterface = new ethers.utils.Interface(orderAbi);
@@ -159,7 +164,8 @@ async function fetchOrderDetailsWithMulticall(
     'borrowedTime',
     'borrowerRepaidTime',
     'deadLinesData',
-    'toLenderBtcTx'
+    'toLenderBtcTx',
+    'limitedDays' // 订单期限（天）
   ];
 
   console.log(`\n使用 Multicall3 获取 ${orderIds.length} 个订单的详细信息...`);
@@ -201,6 +207,7 @@ async function fetchOrderDetailsWithMulticall(
           const borrowerRepaidTimeResult = results[resultIdx++];
           const deadLinesDataResult = results[resultIdx++];
           const toLenderBtcTxResult = results[resultIdx++];
+          const limitedDaysResult = results[resultIdx++];
 
           // 解码各个字段
           const status = statusResult.success
@@ -263,7 +270,23 @@ async function fetchOrderDetailsWithMulticall(
             }
           }
 
-          orderDetailsMap.set(orderId.toLowerCase(), {
+          const limitedDays = limitedDaysResult.success
+            ? orderInterface.decodeFunctionResult('limitedDays', limitedDaysResult.returnData)[0].toNumber()
+            : 0;
+
+          // 订单实际时长（天）= borrowerRepaidTime - borrowedTime，未还款则为 0
+          const orderPeriod =
+            borrowerRepaidTime > 0 && borrowedTime > 0
+              ? (borrowerRepaidTime - borrowedTime) / 86400
+              : 0;
+          const orderPeriodStr = `${orderPeriod.toFixed(2)}天`;
+
+          const orderIdLower = orderId.toLowerCase();
+          const useDiscount = collateralByOrderId
+            ? realBtcAmountRaw === (collateralByOrderId.get(orderIdLower) ?? '')
+            : false;
+
+          orderDetailsMap.set(orderIdLower, {
             status,
             statusName: OrderStatusNames[status] || 'Unknown',
             borrower,
@@ -279,9 +302,12 @@ async function fetchOrderDetailsWithMulticall(
             borrowerRepaidTime,
             borrowerRepaidTimeStr: timestampToStr(borrowerRepaidTime),
             deadLinesData,
+            limitedDays,
+            orderPeriod,
+            orderPeriodStr,
             realBtcAmount,
             realBtcAmountRaw,
-            useDiscount: false // 将在附加到记录时计算
+            useDiscount
           });
         } catch (decodeError) {
           console.error(`解码订单 ${orderId} 详情失败:`, decodeError);
@@ -445,20 +471,13 @@ async function getOrderCreatedLogs(
   // 获取订单详细信息（如果需要）
   if (fetchDetails) {
     const orderIds = records.map(r => r.orderId);
-    const detailsMap = await fetchOrderDetailsWithMulticall(provider, orderIds);
+    const collateralByOrderId = new Map(records.map(r => [r.orderId.toLowerCase(), r.collateralRaw]));
+    const detailsMap = await fetchOrderDetailsWithMulticall(provider, orderIds, collateralByOrderId);
 
-    // 将详情附加到记录中，并计算 useDiscount
-    records = records.map(record => {
-      const details = detailsMap.get(record.orderId.toLowerCase());
-      if (details) {
-        // 比较 collateralRaw 和 realBtcAmountRaw，相等则 useDiscount 为 true
-        details.useDiscount = details.realBtcAmountRaw === record.collateralRaw;
-      }
-      return {
-        ...record,
-        details
-      };
-    });
+    records = records.map(record => ({
+      ...record,
+      details: detailsMap.get(record.orderId.toLowerCase())
+    }));
   }
 
   return { records };
@@ -556,19 +575,16 @@ async function main() {
   let updatedDetailsMap = new Map<string, OrderDetails>();
   if (nonClosedOrders.length > 0) {
     const orderIdsToUpdate = nonClosedOrders.map(r => r.orderId);
-    updatedDetailsMap = await fetchOrderDetailsWithMulticall(provider, orderIdsToUpdate);
+    const collateralByOrderId = new Map(nonClosedOrders.map(r => [r.orderId.toLowerCase(), r.collateralRaw]));
+    updatedDetailsMap = await fetchOrderDetailsWithMulticall(provider, orderIdsToUpdate, collateralByOrderId);
   }
 
   // 4. 合并数据：更新现有记录的详情
   const existingRecordsMap = new Map<string, OrderRecord>();
   for (const record of existingRecords) {
     const orderId = record.orderId.toLowerCase();
-    // 如果有更新的详情，应用它
     if (updatedDetailsMap.has(orderId)) {
-      const newDetails = updatedDetailsMap.get(orderId)!;
-      // 计算 useDiscount
-      newDetails.useDiscount = newDetails.realBtcAmountRaw === record.collateralRaw;
-      record.details = newDetails;
+      record.details = updatedDetailsMap.get(orderId)!;
     }
     existingRecordsMap.set(orderId, record);
   }
@@ -591,6 +607,8 @@ async function main() {
   // 筛选当前已借出的订单（BORROWED 状态）
   const borrowedOrders = allRecords.filter(r => r.details?.status === OrderStatus.BORROWED);
 
+  const repaidOrders = allRecords.filter(r => r.details?.status === OrderStatus.REPAID);
+
   // 筛选已清算的订单：status 为 CLOSED，有 borrowedTime 但没有 borrowerRepaidTime
   // TODO: 需要优化，因为有些订单请求了仲裁，没有清算 （可以通过ArbitrationRequested事件？ 或者通过合约拿borrowerUnlockSignature？）
   const liquidatedOrders = allRecords.filter(r =>
@@ -612,10 +630,28 @@ async function main() {
   const validOrdersList = allRecords.filter(r => r.details?.borrowedTime > 0);
   const discountOrdersList = validOrdersList.filter(r => r.details?.useDiscount === true);
 
+  const takenOrdersList = allRecords.filter(r => r.details?.takenTime > 0);
+
+  // 所有已还款订单
+  const btcdRepaidOrdersList = allRecords.filter(r => r.details?.borrowerRepaidTime > 0);
+
+  // 已还款订单的平均实际时长（天）
+  const totalOrderPeriodDays = btcdRepaidOrdersList.reduce((sum, r) => sum + (r.details?.orderPeriod ?? 0), 0);
+  const avgOrderPeriodDays = btcdRepaidOrdersList.length > 0 ? totalOrderPeriodDays / btcdRepaidOrdersList.length : 0;
+  const avgOrderPeriodStr = `${avgOrderPeriodDays.toFixed(2)}天`;
+
+  const btcdRepaidOrdersAmountBiggerThan10List = btcdRepaidOrdersList.filter(r => parseFloat(r.tokenAmount) > 10 && r.details?.limitedDays >= 90);
+  const totalOrderPeriodDaysBiggerThan10 = btcdRepaidOrdersAmountBiggerThan10List.reduce((sum, r) => sum + (r.details?.orderPeriod ?? 0), 0);
+  const avgOrderPeriodDaysBiggerThan10 = btcdRepaidOrdersAmountBiggerThan10List.length > 0 ? totalOrderPeriodDaysBiggerThan10 / btcdRepaidOrdersAmountBiggerThan10List.length : 0;
+  const avgOrderPeriodStrBiggerThan10 = `${avgOrderPeriodDaysBiggerThan10.toFixed(2)}天`;
+
   const stats = {
     totalOrders: allRecords.length,
     // 有效订单总数（borrowedTime > 0）
     validOrders: validOrdersList.length,
+    // 有效订单中 limitedDays 为 180 天的订单数量
+    limitedDays180Count: validOrdersList.filter(r => r.details?.limitedDays === 180).length,
+    takenOrders: takenOrdersList.length,
     // 使用 discount 的订单数（borrowedTime > 0 且 useDiscount = true）
     discountOrders: discountOrdersList.length,
     borrowOrders: allRecords.filter(r => r.orderType === OrderType.Borrow).length,
@@ -632,6 +668,11 @@ async function main() {
     // 当前锁定在订单中的BTCD总量 = 还未借出和已还款（未关闭）的订单的代币数量
     lockedInOrdersBTCD: allRecords.filter(r => r.details?.status !== OrderStatus.BORROWED && r.details?.status !== OrderStatus.CLOSED).reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0),
     uniqueTokens: [...new Set(allRecords.map(r => r.token))],
+    // 已还款订单的平均实际时长（仅统计 btcdRepaidOrdersList）
+    avgOrderPeriodDays,
+    avgOrderPeriodStr,
+    avgOrderPeriodDaysBiggerThan10,
+    avgOrderPeriodStrBiggerThan10,
     firstOrderBlock: allRecords.length > 0 ? allRecords[0].blockNumber : null,
     lastOrderBlock: allRecords.length > 0 ? allRecords[allRecords.length - 1].blockNumber : null,
     firstOrderTime: allRecords.length > 0 ? allRecords[0].timestampStr : null,
@@ -661,8 +702,8 @@ async function main() {
       taken: allRecords.filter(r => r.details?.status === OrderStatus.TAKEN).length,
       borrowerProofSubmitted: allRecords.filter(r => r.details?.status === OrderStatus.BORROWER_PROOF_SUBMITTED).length,
       borrowerPayArbitratorSubmitted: allRecords.filter(r => r.details?.status === OrderStatus.BORROWER_PAY_ARBITRATOR_SUBMITTED).length,
-      borrowed: allRecords.filter(r => r.details?.status === OrderStatus.BORROWED).length,
-      repaid: allRecords.filter(r => r.details?.status === OrderStatus.REPAID).length,
+      borrowed: borrowedOrders.length,
+      repaid: repaidOrders.length,
       lenderProofSubmitted: allRecords.filter(r => r.details?.status === OrderStatus.LENDER_PROOF_SUBMITTED).length,
       lenderPaymentConfirmed: allRecords.filter(r => r.details?.status === OrderStatus.LENDER_PAYMENT_CONFIRMED).length,
       arbitrationRequested: allRecords.filter(r => r.details?.status === OrderStatus.ARBITRATION_REQUESTED).length,
@@ -683,7 +724,9 @@ async function main() {
 
   allRecords.forEach(r => {
     if (r.details?.borrowedTime) {
+    // if (r.details?.takenTime) {
       const dayTimestamp = getUnitStartTimestamp(r.details.borrowedTime, 'day');
+      // const dayTimestamp = getUnitStartTimestamp(r.details.takenTime, 'day');
       const existing = dailyBorrowedStats.get(dayTimestamp) || { count: 0, totalRealBtc: 0, totalTokenAmount: 0 };
       const existingBtcd = dailyBtcdStats.get(dayTimestamp) || { totalRealBtc: 0, totalTokenAmount: 0 };
 
@@ -700,6 +743,7 @@ async function main() {
       dailyBtcdStats.set(dayTimestamp, existingBtcd);
 
       const weekTimestamp = getUnitStartTimestamp(r.details.borrowedTime, 'week');
+      // const weekTimestamp = getUnitStartTimestamp(r.details.takenTime, 'week');
       const existingWeek = weeklyBorrowedStats.get(weekTimestamp) || { count: 0, totalRealBtc: 0, totalTokenAmount: 0 };
       const existingWeekBtcd = weeklyBtcdStats.get(weekTimestamp) || { totalRealBtc: 0, totalTokenAmount: 0 };
 
@@ -955,8 +999,11 @@ async function main() {
   console.log(`总订单数: ${formatWithCommas(stats.totalOrders, 0)}`);
   const validOrdersPercent = stats.totalOrders > 0 ? ((stats.validOrders / stats.totalOrders) * 100).toFixed(2) : '0.00';
   console.log(`有效订单数: ${formatWithCommas(stats.validOrders, 0)} (${validOrdersPercent}%)`);
+  const takenOrdersPercent = stats.totalOrders > 0 ? ((stats.takenOrders / stats.totalOrders) * 100).toFixed(2) : '0.00';
+  console.log(`已接单订单数: ${formatWithCommas(stats.takenOrders, 0)} (${takenOrdersPercent}%)`);
   const discountOrdersPercent = stats.validOrders > 0 ? ((stats.discountOrders / stats.validOrders) * 100).toFixed(2) : '0.00';
   console.log(`使用Discount订单数: ${formatWithCommas(stats.discountOrders, 0)} (${discountOrdersPercent}%)`);
+  console.log(`有效订单中 limitedDays 为 180 天的订单数量: ${formatWithCommas(stats.limitedDays180Count, 0)}`);
   // console.log(`借款订单 (Borrow): ${stats.borrowOrders}`);
   // console.log(`出借订单 (Lend): ${stats.lendOrders}`);
   console.log(`累计总抵押 BTC: ${formatWithCommas(stats.totalCollateral, 2)} BTC`);
@@ -965,6 +1012,8 @@ async function main() {
   console.log(`活跃订单铸造BTCD数量: ${formatWithCommas(stats.activeTokenAmount, 2)}`);
   console.log(`订单铸造BTCD总量（活跃订单 + 已清算订单）: ${formatWithCommas(stats.currentMintedBTCD, 2)}`);
   console.log(`锁定在订单中的BTCD总量: ${formatWithCommas(stats.lockedInOrdersBTCD, 2)}`);
+  console.log(`已还款订单的平均实际时长: ${stats.avgOrderPeriodStr}`);
+  console.log(`已还款订单的平均实际时长 (大于10 BTCD): ${stats.avgOrderPeriodStrBiggerThan10}`);
 
 
   if (stats.firstOrderTime) {
@@ -1006,14 +1055,18 @@ async function main() {
   console.log(`  CLOSED (已关闭): ${formatWithCommas(stats.statusStats.closed, 0)}`);
   console.log(`  LIQUIDATED (已清算): ${formatWithCommas(stats.statusStats.liquidated, 0)}`);
 
+
+  // const repaidOrderIDs = new Set(repaidOrders.map(r => r.orderId));
+  // console.log(`已还款订单ID: ${Array.from(repaidOrderIDs).join(', ')}`);
+
   if (allRecords.length > 0) {
     // 构建用户统计对象
     const userStats = {
       totalUsers,
       totalUserOrders: userOrders.length,
-      dailyNewUsers: dailyNewUsersArray,
-      weeklyNewUsers: weeklyNewUsersArray,
-      userOrderRanking: userOrderRanking.slice(0, 100) // 保存 Top 100
+      // dailyNewUsers: dailyNewUsersArray,
+      // weeklyNewUsers: weeklyNewUsersArray,
+      userOrderRanking: userOrderRanking.slice(0, 20) // 保存 Top 20
     };
 
     // 保存到文件
