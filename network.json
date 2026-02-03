@@ -23,6 +23,7 @@
     "multicall3": "0x9A630cB37ADf42c4B77AB310AD45990A3C03b847",
     "issuer_btc_address": "1AEXQ6Gtu61bXPZnuQPXtJhXoEkTXCfYfH",
     "start_block": 13329,
-    "batch_size": 50000
+    "batch_size": 50000,
+    "180order_start_time": 1769843920
   }
 }

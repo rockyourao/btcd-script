@@ -36,6 +36,8 @@ const MULTICALL3_ADDRESS = networkConfig[network].multicall3;
 const INITIAL_START_BLOCK = networkConfig[network].start_block;
 const BATCH_SIZE = networkConfig[network].batch_size;
 const RPC_URL = networkConfig[network].rpc_url;
+// 可选：180 天订单统计起始时间（订单创建时间 >= 此时间的有效订单中，统计 limitedDays=180 占比）
+const ORDER_180_START_TIME = (networkConfig[network] as Record<string, number>)?.['180order_start_time'];
 
 // 加载合约 ABI
 const loanContractAbi = require('./abi/LoanContract.json').abi;
@@ -625,6 +627,10 @@ async function main() {
     !r.details?.borrowerRepaidTime
   );
 
+  const alloverdueOrders = allRecords.filter(r =>
+    r.details?.borrowedTime > 0 &&
+    !r.details?.borrowerRepaidTime
+  );
 
   // 计算统计数据
   const validOrdersList = allRecords.filter(r => r.details?.borrowedTime > 0);
@@ -645,12 +651,57 @@ async function main() {
   const avgOrderPeriodDaysBiggerThan10 = btcdRepaidOrdersAmountBiggerThan10List.length > 0 ? totalOrderPeriodDaysBiggerThan10 / btcdRepaidOrdersAmountBiggerThan10List.length : 0;
   const avgOrderPeriodStrBiggerThan10 = `${avgOrderPeriodDaysBiggerThan10.toFixed(2)}天`;
 
+  // 过期订单排行：按 EVM 用户（borrower）统计，按过期订单数降序
+  const overdueCountByBorrower = new Map<string, number>();
+  for (const r of alloverdueOrders) {
+    const addr = (r.details!.borrower || '').toLowerCase();
+    if (addr) overdueCountByBorrower.set(addr, (overdueCountByBorrower.get(addr) ?? 0) + 1);
+  }
+  const overdueRankByBorrower = [...overdueCountByBorrower.entries()]
+    .map(([address, count]) => ({ address, count }))
+    .sort((a, b) => b.count - a.count);
+
+  // 过期订单排行：按 BTC 用户（borrowerBtcAddress）统计，按过期订单数降序
+  const overdueCountByBtcAddress = new Map<string, number>();
+  for (const r of alloverdueOrders) {
+    const addr = (r.details!.borrowerBtcAddress || '').trim();
+    if (addr) overdueCountByBtcAddress.set(addr, (overdueCountByBtcAddress.get(addr) ?? 0) + 1);
+  }
+  const overdueRankByBorrowerBtcAddress = [...overdueCountByBtcAddress.entries()]
+    .map(([address, count]) => ({ address, count }))
+    .sort((a, b) => b.count - a.count);
+
+  // 当配置了 180order_start_time 时：统计创建时间 >= 该时间且 borrowedTime 有值的订单中，limitedDays=180 的占比
+  let limitedDays180AfterStart: {
+    total: number;
+    limitedDays180Count: number;
+    ratio: number;
+    ratioStr: string;
+  } | null = null;
+  if (ORDER_180_START_TIME != null) {
+    const startTime = ORDER_180_START_TIME;
+    const validOrdersAfter180Start = allRecords.filter(
+      r => (r.details?.borrowedTime ?? 0) > 0 && (r.details?.createTime ?? 0) >= startTime
+    );
+    const count180 = validOrdersAfter180Start.filter(r => r.details?.limitedDays === 180).length;
+    const total = validOrdersAfter180Start.length;
+    const ratio = total > 0 ? count180 / total : 0;
+    limitedDays180AfterStart = {
+      total,
+      limitedDays180Count: count180,
+      ratio,
+      ratioStr: `${(ratio * 100).toFixed(2)}%`
+    };
+  }
+
   const stats = {
     totalOrders: allRecords.length,
     // 有效订单总数（borrowedTime > 0）
     validOrders: validOrdersList.length,
     // 有效订单中 limitedDays 为 180 天的订单数量
     limitedDays180Count: validOrdersList.filter(r => r.details?.limitedDays === 180).length,
+    // 当配置 180order_start_time 时：创建时间 >= 该时间且 borrowedTime 有值的订单中，limitedDays=180 的占比
+    limitedDays180AfterStart,
     takenOrders: takenOrdersList.length,
     // 使用 discount 的订单数（borrowedTime > 0 且 useDiscount = true）
     discountOrders: discountOrdersList.length,
@@ -995,6 +1046,32 @@ async function main() {
     console.log(`  ${(index + 1).toString().padStart(2, ' ')}. ${item.user}: ${formatWithCommas(item.count, 0)} 单`);
   });
 
+  // 1. 统计BTC用户总数 (去重)
+  const uniqueBTCUsers = new Set(userOrders.map(r => r.details!.borrowerBtcAddress.toLowerCase()));
+  const totalBTCUsers = uniqueBTCUsers.size;
+
+  // 2. BTC用户 take 订单数排行榜
+  const btcuserOrderCount: Map<string, number> = new Map();
+  userOrders.forEach(r => {
+    const user = r.details!.borrowerBtcAddress.toLowerCase();
+    btcuserOrderCount.set(user, (btcuserOrderCount.get(user) || 0) + 1);
+  });
+
+  // 按订单数量降序排序
+  const btcuserOrderRanking = Array.from(btcuserOrderCount.entries())
+    .map(([user, count]) => ({ user, count }))
+    .sort((a, b) => b.count - a.count);
+
+  // 打印BTC用户总数
+  console.log(`\n===== BTC用户总数 =====`);
+  console.log(`BTC用户总数: ${formatWithCommas(totalBTCUsers, 0)}`);
+
+  // 打印用户 take 订单数排行榜 (Top 20)
+  console.log(`\n===== BTC用户 Take 订单数排行榜 (Top 20) =====`);
+  btcuserOrderRanking.slice(0, 20).forEach((item, index) => {
+    console.log(`  ${(index + 1).toString().padStart(2, ' ')}. ${item.user}: ${formatWithCommas(item.count, 0)} 单`);
+  });
+
   console.log(`\n===== 订单统计 =====`);
   console.log(`总订单数: ${formatWithCommas(stats.totalOrders, 0)}`);
   const validOrdersPercent = stats.totalOrders > 0 ? ((stats.validOrders / stats.totalOrders) * 100).toFixed(2) : '0.00';
@@ -1004,6 +1081,10 @@ async function main() {
   const discountOrdersPercent = stats.validOrders > 0 ? ((stats.discountOrders / stats.validOrders) * 100).toFixed(2) : '0.00';
   console.log(`使用Discount订单数: ${formatWithCommas(stats.discountOrders, 0)} (${discountOrdersPercent}%)`);
   console.log(`有效订单中 limitedDays 为 180 天的订单数量: ${formatWithCommas(stats.limitedDays180Count, 0)}`);
+  if (stats.limitedDays180AfterStart != null) {
+    const s = stats.limitedDays180AfterStart;
+    console.log(`[180order_start_time] 创建时间 >= 起始时间且已借款订单数: ${formatWithCommas(s.total, 0)}，其中 limitedDays=180: ${formatWithCommas(s.limitedDays180Count, 0)}，占比: ${s.ratioStr}`);
+  }
   // console.log(`借款订单 (Borrow): ${stats.borrowOrders}`);
   // console.log(`出借订单 (Lend): ${stats.lendOrders}`);
   console.log(`累计总抵押 BTC: ${formatWithCommas(stats.totalCollateral, 2)} BTC`);
@@ -1040,6 +1121,21 @@ async function main() {
   console.log(`  订单数: ${formatWithCommas(stats.overdueStats.count, 0)}`);
   console.log(`  抵押 BTC: ${formatWithCommas(stats.overdueStats.collateral, 8)} BTC`);
   console.log(`  BTCD数量: ${formatWithCommas(stats.overdueStats.tokenAmount, 2)}`);
+
+  const overdueRankBorrowerTop10 = overdueRankByBorrower.slice(0, 10);
+  const overdueRankBtcTop10 = overdueRankByBorrowerBtcAddress.slice(0, 10);
+  if (overdueRankBorrowerTop10.length > 0) {
+    console.log(`过期排行 Top10 (EVM 用户 borrower):`);
+    overdueRankBorrowerTop10.forEach((item, i) => {
+      console.log(`    ${i + 1}. ${item.address} 过期订单数: ${item.count}`);
+    });
+  }
+  if (overdueRankBtcTop10.length > 0) {
+    console.log(`过期排行 Top10 (BTC 用户 borrowerBtcAddress):`);
+    overdueRankBtcTop10.forEach((item, i) => {
+      console.log(`    ${i + 1}. ${item.address} 过期订单数: ${item.count}`);
+    });
+  }
 
   // 显示状态统计
   console.log(`\n===== 订单状态分布 =====`);
