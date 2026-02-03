@@ -485,20 +485,26 @@ async function getOrderCreatedLogs(
   return { records };
 }
 
-async function main() {
-  const args = process.argv.slice(2);
+// ========== main 拆出的辅助函数 ==========
 
+interface MainArgs {
+  orderType: number | undefined;
+  limit: number | undefined;
+  beforeBlock: number | undefined;
+  fetchAll: boolean;
+  skipTimestamp: boolean;
+  fetchDetails: boolean;
+}
+
+function parseMainArgs(args: string[]): MainArgs {
   let orderType: number | undefined;
   let limit: number | undefined;
   let beforeBlock: number | undefined;
   let fetchAll = true;
   let skipTimestamp = true;
   let fetchDetails = false;
-
-  // 解析参数
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--network' && args[i + 1]) {
-      // 已在顶层处理，跳过
       i++;
     } else if (args[i] === '--orderType' && args[i + 1]) {
       orderType = parseInt(args[i + 1], 10);
@@ -510,26 +516,16 @@ async function main() {
     } else if (args[i] === '--before' && args[i + 1]) {
       beforeBlock = parseInt(args[i + 1], 10);
       i++;
-    // } else if (args[i] === '--skip-timestamp') {
-    //   skipTimestamp = true;
     } else if (args[i] === '--fetch-details') {
       fetchDetails = true;
     }
   }
+  return { orderType, limit, beforeBlock, fetchAll, skipTimestamp, fetchDetails };
+}
 
-  const startTime = Date.now();
-  console.log(`\n===== 获取 OrderCreated 事件 [网络: ${network}] =====`);
-
-  const provider = new (ethers as any).providers.JsonRpcProvider(RPC_URL);
-  const outputFile = `data/${network}/btcd_order_stats.json`;
-
-  const currentBlock: number = await provider.getBlockNumber();
-  console.log(`当前区块高度: ${currentBlock}`);
-
-  // 1. 从已有数据文件中读取数据
+function loadExistingOrderData(outputFile: string): { existingRecords: OrderRecord[]; savedCurrentBlock: number } {
   let existingRecords: OrderRecord[] = [];
   let savedCurrentBlock = 0;
-
   try {
     if (fs.existsSync(outputFile)) {
       console.log(`\n读取已有数据文件: ${outputFile}`);
@@ -546,34 +542,17 @@ async function main() {
   } catch (error) {
     console.error(`读取 ${outputFile} 失败:`, error);
   }
+  return { existingRecords, savedCurrentBlock };
+}
 
-  // 如果 beforeBlock 未定义，使用保存的 currentBlock
-  if (beforeBlock === undefined && savedCurrentBlock > 0) {
-    beforeBlock = savedCurrentBlock;
-  }
-
-  // 2. 获取新创建的订单
-  console.log(`\n获取从区块 ${beforeBlock ? beforeBlock + 1 : INITIAL_START_BLOCK} 到 ${currentBlock} 的新订单...`);
-  const { records: newRecords } = await getOrderCreatedLogs(provider, currentBlock, {
-    orderType,
-    limit,
-    beforeBlock,
-    fetchAll,
-    skipTimestamp,
-    fetchDetails: true  // 新订单始终获取详情
-  });
-
-  console.log(`\n找到 ${newRecords.length} 条新订单`);
-
-  // 3. 找出所有 status 不是 Closed(6) 和 Cancelled(7) 的订单，需要重新获取详情
-  const nonClosedOrders = existingRecords.filter(r => {
-    const status = r.details?.status;
-    return status !== OrderStatus.CLOSED;
-  });
-
+async function updateDetailsAndMergeRecords(
+  provider: any,
+  existingRecords: OrderRecord[],
+  newRecords: OrderRecord[]
+): Promise<{ allRecords: OrderRecord[]; updatedDetailsMap: Map<string, OrderDetails> }> {
+  const nonClosedOrders = existingRecords.filter(r => r.details?.status !== OrderStatus.CLOSED);
   console.log(`\n需要更新状态的订单 (非 Closed/Cancelled): ${nonClosedOrders.length} 条`);
 
-  // 获取这些订单的最新详情
   let updatedDetailsMap = new Map<string, OrderDetails>();
   if (nonClosedOrders.length > 0) {
     const orderIdsToUpdate = nonClosedOrders.map(r => r.orderId);
@@ -581,7 +560,6 @@ async function main() {
     updatedDetailsMap = await fetchOrderDetailsWithMulticall(provider, orderIdsToUpdate, collateralByOrderId);
   }
 
-  // 4. 合并数据：更新现有记录的详情
   const existingRecordsMap = new Map<string, OrderRecord>();
   for (const record of existingRecords) {
     const orderId = record.orderId.toLowerCase();
@@ -590,8 +568,6 @@ async function main() {
     }
     existingRecordsMap.set(orderId, record);
   }
-
-  // 添加新记录（新记录已经有详情了）
   for (const newRecord of newRecords) {
     const orderId = newRecord.orderId.toLowerCase();
     if (!existingRecordsMap.has(orderId)) {
@@ -599,49 +575,52 @@ async function main() {
     }
   }
 
-  // 转换为数组并按区块号排序
   const allRecords = Array.from(existingRecordsMap.values());
   allRecords.sort((a, b) => a.blockNumber - b.blockNumber);
+  return { allRecords, updatedDetailsMap };
+}
 
-  // 当前时间戳（用于计算到期未还款）
-  const nowTimestamp = Math.floor(Date.now() / 1000);
+/** 派生订单列表与中间统计量，供 buildOrderStats 使用 */
+interface DerivedOrderLists {
+  borrowedOrders: OrderRecord[];
+  repaidOrders: OrderRecord[];
+  liquidatedOrders: OrderRecord[];
+  overdueOrders: OrderRecord[];
+  alloverdueOrders: OrderRecord[];
+  validOrdersList: OrderRecord[];
+  discountOrdersList: OrderRecord[];
+  takenOrdersList: OrderRecord[];
+  btcdRepaidOrdersList: OrderRecord[];
+  avgOrderPeriodDays: number;
+  avgOrderPeriodStr: string;
+  avgOrderPeriodDaysBiggerThan10: number;
+  avgOrderPeriodStrBiggerThan10: string;
+}
 
-  // 筛选当前已借出的订单（BORROWED 状态）
+function computeDerivedOrderLists(allRecords: OrderRecord[], nowTimestamp: number): DerivedOrderLists {
   const borrowedOrders = allRecords.filter(r => r.details?.status === OrderStatus.BORROWED);
-
   const repaidOrders = allRecords.filter(r => r.details?.status === OrderStatus.REPAID);
-
-  // 筛选已清算的订单：status 为 CLOSED，有 borrowedTime 但没有 borrowerRepaidTime
-  // TODO: 需要优化，因为有些订单请求了仲裁，没有清算 （可以通过ArbitrationRequested事件？ 或者通过合约拿borrowerUnlockSignature？）
   const liquidatedOrders = allRecords.filter(r =>
     r.details?.status === OrderStatus.CLOSED &&
     r.details?.borrowedTime > 0 &&
     !r.details?.borrowerRepaidTime
   );
-
-  // 筛选到期未还款的订单：status 为 BORROWED，repayDeadLine 已到，但 borrowerRepaidTime 还是 0
   const overdueOrders = allRecords.filter(r =>
     r.details?.status === OrderStatus.BORROWED &&
     r.details?.deadLinesData?.repayDeadLine > 0 &&
     r.details?.deadLinesData?.repayDeadLine < nowTimestamp &&
     !r.details?.borrowerRepaidTime
   );
-
   const alloverdueOrders = allRecords.filter(r =>
     r.details?.borrowedTime > 0 &&
-    !r.details?.borrowerRepaidTime
+    !r.details?.borrowerRepaidTime &&
+    r.details?.deadLinesData?.repayDeadLine < nowTimestamp
   );
-
-  // 计算统计数据
   const validOrdersList = allRecords.filter(r => r.details?.borrowedTime > 0);
   const discountOrdersList = validOrdersList.filter(r => r.details?.useDiscount === true);
-
   const takenOrdersList = allRecords.filter(r => r.details?.takenTime > 0);
-
-  // 所有已还款订单
   const btcdRepaidOrdersList = allRecords.filter(r => r.details?.borrowerRepaidTime > 0);
 
-  // 已还款订单的平均实际时长（天）
   const totalOrderPeriodDays = btcdRepaidOrdersList.reduce((sum, r) => sum + (r.details?.orderPeriod ?? 0), 0);
   const avgOrderPeriodDays = btcdRepaidOrdersList.length > 0 ? totalOrderPeriodDays / btcdRepaidOrdersList.length : 0;
   const avgOrderPeriodStr = `${avgOrderPeriodDays.toFixed(2)}天`;
@@ -651,7 +630,27 @@ async function main() {
   const avgOrderPeriodDaysBiggerThan10 = btcdRepaidOrdersAmountBiggerThan10List.length > 0 ? totalOrderPeriodDaysBiggerThan10 / btcdRepaidOrdersAmountBiggerThan10List.length : 0;
   const avgOrderPeriodStrBiggerThan10 = `${avgOrderPeriodDaysBiggerThan10.toFixed(2)}天`;
 
-  // 过期订单排行：按 EVM 用户（borrower）统计，按过期订单数降序
+  return {
+    borrowedOrders,
+    repaidOrders,
+    liquidatedOrders,
+    overdueOrders,
+    alloverdueOrders,
+    validOrdersList,
+    discountOrdersList,
+    takenOrdersList,
+    btcdRepaidOrdersList,
+    avgOrderPeriodDays,
+    avgOrderPeriodStr,
+    avgOrderPeriodDaysBiggerThan10,
+    avgOrderPeriodStrBiggerThan10
+  };
+}
+
+function computeOverdueRankings(alloverdueOrders: OrderRecord[]): {
+  overdueRankByBorrower: { address: string; count: number }[];
+  overdueRankByBorrowerBtcAddress: { address: string; count: number }[];
+} {
   const overdueCountByBorrower = new Map<string, number>();
   for (const r of alloverdueOrders) {
     const addr = (r.details!.borrower || '').toLowerCase();
@@ -661,7 +660,6 @@ async function main() {
     .map(([address, count]) => ({ address, count }))
     .sort((a, b) => b.count - a.count);
 
-  // 过期订单排行：按 BTC 用户（borrowerBtcAddress）统计，按过期订单数降序
   const overdueCountByBtcAddress = new Map<string, number>();
   for (const r of alloverdueOrders) {
     const addr = (r.details!.borrowerBtcAddress || '').trim();
@@ -671,55 +669,66 @@ async function main() {
     .map(([address, count]) => ({ address, count }))
     .sort((a, b) => b.count - a.count);
 
-  // 当配置了 180order_start_time 时：统计创建时间 >= 该时间且 borrowedTime 有值的订单中，limitedDays=180 的占比
-  let limitedDays180AfterStart: {
-    total: number;
-    limitedDays180Count: number;
-    ratio: number;
-    ratioStr: string;
-  } | null = null;
-  if (ORDER_180_START_TIME != null) {
-    const startTime = ORDER_180_START_TIME;
-    const validOrdersAfter180Start = allRecords.filter(
-      r => (r.details?.borrowedTime ?? 0) > 0 && (r.details?.createTime ?? 0) >= startTime
-    );
-    const count180 = validOrdersAfter180Start.filter(r => r.details?.limitedDays === 180).length;
-    const total = validOrdersAfter180Start.length;
-    const ratio = total > 0 ? count180 / total : 0;
-    limitedDays180AfterStart = {
-      total,
-      limitedDays180Count: count180,
-      ratio,
-      ratioStr: `${(ratio * 100).toFixed(2)}%`
-    };
-  }
+  return { overdueRankByBorrower, overdueRankByBorrowerBtcAddress };
+}
 
-  const stats = {
+function computeLimitedDays180AfterStart(allRecords: OrderRecord[]): {
+  total: number;
+  limitedDays180Count: number;
+  ratio: number;
+  ratioStr: string;
+} | null {
+  if (ORDER_180_START_TIME == null) return null;
+  const startTime = ORDER_180_START_TIME;
+  const validOrdersAfter180Start = allRecords.filter(
+    r => (r.details?.borrowedTime ?? 0) > 0 && (r.details?.createTime ?? 0) >= startTime
+  );
+  const count180 = validOrdersAfter180Start.filter(r => r.details?.limitedDays === 180).length;
+  const total = validOrdersAfter180Start.length;
+  const ratio = total > 0 ? count180 / total : 0;
+  return {
+    total,
+    limitedDays180Count: count180,
+    ratio,
+    ratioStr: `${(ratio * 100).toFixed(2)}%`
+  };
+}
+
+function buildOrderStats(
+  allRecords: OrderRecord[],
+  derived: DerivedOrderLists,
+  limitedDays180AfterStart: { total: number; limitedDays180Count: number; ratio: number; ratioStr: string } | null
+): any {
+  const {
+    borrowedOrders,
+    liquidatedOrders,
+    overdueOrders,
+    validOrdersList,
+    takenOrdersList,
+    discountOrdersList,
+    avgOrderPeriodDays,
+    avgOrderPeriodStr,
+    avgOrderPeriodDaysBiggerThan10,
+    avgOrderPeriodStrBiggerThan10
+  } = derived;
+
+  return {
     totalOrders: allRecords.length,
-    // 有效订单总数（borrowedTime > 0）
     validOrders: validOrdersList.length,
-    // 有效订单中 limitedDays 为 180 天的订单数量
     limitedDays180Count: validOrdersList.filter(r => r.details?.limitedDays === 180).length,
-    // 当配置 180order_start_time 时：创建时间 >= 该时间且 borrowedTime 有值的订单中，limitedDays=180 的占比
     limitedDays180AfterStart,
     takenOrders: takenOrdersList.length,
-    // 使用 discount 的订单数（borrowedTime > 0 且 useDiscount = true）
     discountOrders: discountOrdersList.length,
     borrowOrders: allRecords.filter(r => r.orderType === OrderType.Borrow).length,
     lendOrders: allRecords.filter(r => r.orderType === OrderType.Lend).length,
-    // 只统计 borrowedTime > 0 的订单（实际发生借款的订单）
     totalCollateral: allRecords.filter(r => r.details?.borrowedTime > 0).reduce((sum, r) => sum + parseFloat(r.details.realBtcAmount), 0),
     totalCollateralDiscount: allRecords.filter(r => r.details?.borrowedTime > 0).reduce((sum, r) => sum + parseFloat(r.collateral), 0),
     totalTokenAmount: allRecords.filter(r => r.details?.borrowedTime > 0).reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0),
-    // 当前活跃的统计（status 不是 CLOSED 的订单）
     activeTokenAmount: allRecords.filter(r => r.details?.status !== OrderStatus.CLOSED).reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0),
-    // 当前订单铸造的BTCD总量 = 当前活跃代币数量 + 已清算订单的代币数量
     currentMintedBTCD: allRecords.filter(r => r.details?.status !== OrderStatus.CLOSED).reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0) +
       liquidatedOrders.reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0),
-    // 当前锁定在订单中的BTCD总量 = 还未借出和已还款（未关闭）的订单的代币数量
     lockedInOrdersBTCD: allRecords.filter(r => r.details?.status !== OrderStatus.BORROWED && r.details?.status !== OrderStatus.CLOSED).reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0),
     uniqueTokens: [...new Set(allRecords.map(r => r.token))],
-    // 已还款订单的平均实际时长（仅统计 btcdRepaidOrdersList）
     avgOrderPeriodDays,
     avgOrderPeriodStr,
     avgOrderPeriodDaysBiggerThan10,
@@ -728,33 +737,29 @@ async function main() {
     lastOrderBlock: allRecords.length > 0 ? allRecords[allRecords.length - 1].blockNumber : null,
     firstOrderTime: allRecords.length > 0 ? allRecords[0].timestampStr : null,
     lastOrderTime: allRecords.length > 0 ? allRecords[allRecords.length - 1].timestampStr : null,
-    // 当前已借出统计
     currentBorrowed: {
       count: borrowedOrders.length,
       collateral: borrowedOrders.reduce((sum, r) => sum + parseFloat(r.details.realBtcAmount), 0),
       collateralDiscount: borrowedOrders.reduce((sum, r) => sum + parseFloat(r.collateral), 0),
       tokenAmount: borrowedOrders.reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0)
     },
-    // 已清算订单统计
     liquidatedStats: {
       count: liquidatedOrders.length,
       collateral: liquidatedOrders.reduce((sum, r) => sum + parseFloat(r.details.realBtcAmount), 0),
       tokenAmount: liquidatedOrders.reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0)
     },
-    // 到期未还款订单统计
     overdueStats: {
       count: overdueOrders.length,
       collateral: overdueOrders.reduce((sum, r) => sum + parseFloat(r.details.realBtcAmount), 0),
       tokenAmount: overdueOrders.reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0)
     },
-    // 按状态统计
     statusStats: {
       created: allRecords.filter(r => r.details?.status === OrderStatus.CREATED).length,
       taken: allRecords.filter(r => r.details?.status === OrderStatus.TAKEN).length,
       borrowerProofSubmitted: allRecords.filter(r => r.details?.status === OrderStatus.BORROWER_PROOF_SUBMITTED).length,
       borrowerPayArbitratorSubmitted: allRecords.filter(r => r.details?.status === OrderStatus.BORROWER_PAY_ARBITRATOR_SUBMITTED).length,
       borrowed: borrowedOrders.length,
-      repaid: repaidOrders.length,
+      repaid: derived.repaidOrders.length,
       lenderProofSubmitted: allRecords.filter(r => r.details?.status === OrderStatus.LENDER_PROOF_SUBMITTED).length,
       lenderPaymentConfirmed: allRecords.filter(r => r.details?.status === OrderStatus.LENDER_PAYMENT_CONFIRMED).length,
       arbitrationRequested: allRecords.filter(r => r.details?.status === OrderStatus.ARBITRATION_REQUESTED).length,
@@ -762,315 +767,274 @@ async function main() {
       liquidated: liquidatedOrders.length
     }
   };
+}
 
-  // 按天统计借出订单数据（用于生成趋势图）
-  const dailyBorrowedStats: Map<number, { count: number; totalRealBtc: number; totalTokenAmount: number }> = new Map();
-  const dailyBtcdStats: Map<number, { totalRealBtc: number; totalTokenAmount: number }> = new Map();
-
-  const weeklyBorrowedStats: Map<number, { count: number; totalRealBtc: number; totalTokenAmount: number }> = new Map();
-  const weeklyBtcdStats: Map<number, { totalRealBtc: number; totalTokenAmount: number }> = new Map();
-
-  const monthlyBorrowedStats: Map<number, { count: number; totalRealBtc: number; totalTokenAmount: number }> = new Map();
-  const monthlyBtcdStats: Map<number, { totalRealBtc: number; totalTokenAmount: number }> = new Map();
+/** 按天/周/月统计借出与 BTCD 增量，返回已排序的数组（用于趋势图与打印） */
+function buildTimeSeriesStats(allRecords: OrderRecord[]): {
+  dailyBorrowedArray: { date: string; timestamp: number; count: number; totalRealBtc: number; totalTokenAmount: number }[];
+  dailyBtcdArray: { date: string; timestamp: number; totalRealBtc: number; totalTokenAmount: number }[];
+  weeklyBorrowedArray: { date: string; timestamp: number; count: number; totalRealBtc: number; totalTokenAmount: number }[];
+  weeklyBtcdArray: { date: string; timestamp: number; totalRealBtc: number; totalTokenAmount: number }[];
+  monthlyBorrowedArray: { date: string; timestamp: number; count: number; totalRealBtc: number; totalTokenAmount: number }[];
+  monthlyBtcdArray: { date: string; timestamp: number; totalRealBtc: number; totalTokenAmount: number }[];
+} {
+  const dailyBorrowedStats = new Map<number, { count: number; totalRealBtc: number; totalTokenAmount: number }>();
+  const dailyBtcdStats = new Map<number, { totalRealBtc: number; totalTokenAmount: number }>();
+  const weeklyBorrowedStats = new Map<number, { count: number; totalRealBtc: number; totalTokenAmount: number }>();
+  const weeklyBtcdStats = new Map<number, { totalRealBtc: number; totalTokenAmount: number }>();
+  const monthlyBorrowedStats = new Map<number, { count: number; totalRealBtc: number; totalTokenAmount: number }>();
+  const monthlyBtcdStats = new Map<number, { totalRealBtc: number; totalTokenAmount: number }>();
 
   allRecords.forEach(r => {
-    if (r.details?.borrowedTime) {
-    // if (r.details?.takenTime) {
-      const dayTimestamp = getUnitStartTimestamp(r.details.borrowedTime, 'day');
-      // const dayTimestamp = getUnitStartTimestamp(r.details.takenTime, 'day');
-      const existing = dailyBorrowedStats.get(dayTimestamp) || { count: 0, totalRealBtc: 0, totalTokenAmount: 0 };
-      const existingBtcd = dailyBtcdStats.get(dayTimestamp) || { totalRealBtc: 0, totalTokenAmount: 0 };
+    if (!r.details?.borrowedTime) return;
+    const dayTimestamp = getUnitStartTimestamp(r.details.borrowedTime, 'day');
+    const existing = dailyBorrowedStats.get(dayTimestamp) || { count: 0, totalRealBtc: 0, totalTokenAmount: 0 };
+    const existingBtcd = dailyBtcdStats.get(dayTimestamp) || { totalRealBtc: 0, totalTokenAmount: 0 };
+    const lockedBTC = parseFloat(r.details.realBtcAmount || '0');
+    const btcdAmount = parseFloat(r.tokenAmount || '0');
 
-      existing.count += 1;
-      let lockedBTC = parseFloat(r.details.realBtcAmount || '0')
-      let btcdAmount = parseFloat(r.tokenAmount || '0');
+    existing.count += 1;
+    existing.totalRealBtc += lockedBTC;
+    existing.totalTokenAmount += btcdAmount;
+    dailyBorrowedStats.set(dayTimestamp, existing);
+    existingBtcd.totalRealBtc += lockedBTC;
+    existingBtcd.totalTokenAmount += btcdAmount;
+    dailyBtcdStats.set(dayTimestamp, existingBtcd);
 
-      existing.totalRealBtc += lockedBTC;
-      existing.totalTokenAmount += btcdAmount
-      dailyBorrowedStats.set(dayTimestamp, existing);
+    const weekTimestamp = getUnitStartTimestamp(r.details.borrowedTime, 'week');
+    const existingWeek = weeklyBorrowedStats.get(weekTimestamp) || { count: 0, totalRealBtc: 0, totalTokenAmount: 0 };
+    const existingWeekBtcd = weeklyBtcdStats.get(weekTimestamp) || { totalRealBtc: 0, totalTokenAmount: 0 };
+    existingWeek.count += 1;
+    existingWeek.totalRealBtc += lockedBTC;
+    existingWeek.totalTokenAmount += btcdAmount;
+    weeklyBorrowedStats.set(weekTimestamp, existingWeek);
+    existingWeekBtcd.totalRealBtc += lockedBTC;
+    existingWeekBtcd.totalTokenAmount += btcdAmount;
+    weeklyBtcdStats.set(weekTimestamp, existingWeekBtcd);
 
-      existingBtcd.totalRealBtc += lockedBTC;
-      existingBtcd.totalTokenAmount += btcdAmount;
-      dailyBtcdStats.set(dayTimestamp, existingBtcd);
+    const monthTimestamp = getUnitStartTimestamp(r.details.borrowedTime, 'month');
+    const existingMonth = monthlyBorrowedStats.get(monthTimestamp) || { count: 0, totalRealBtc: 0, totalTokenAmount: 0 };
+    const existingMonthBtcd = monthlyBtcdStats.get(monthTimestamp) || { totalRealBtc: 0, totalTokenAmount: 0 };
+    existingMonth.count += 1;
+    existingMonth.totalRealBtc += lockedBTC;
+    existingMonth.totalTokenAmount += btcdAmount;
+    monthlyBorrowedStats.set(monthTimestamp, existingMonth);
+    existingMonthBtcd.totalRealBtc += lockedBTC;
+    existingMonthBtcd.totalTokenAmount += btcdAmount;
+    monthlyBtcdStats.set(monthTimestamp, existingMonthBtcd);
 
-      const weekTimestamp = getUnitStartTimestamp(r.details.borrowedTime, 'week');
-      // const weekTimestamp = getUnitStartTimestamp(r.details.takenTime, 'week');
-      const existingWeek = weeklyBorrowedStats.get(weekTimestamp) || { count: 0, totalRealBtc: 0, totalTokenAmount: 0 };
-      const existingWeekBtcd = weeklyBtcdStats.get(weekTimestamp) || { totalRealBtc: 0, totalTokenAmount: 0 };
-
-      existingWeek.count += 1;
-      existingWeek.totalRealBtc += lockedBTC;
-      existingWeek.totalTokenAmount += btcdAmount;
-      weeklyBorrowedStats.set(weekTimestamp, existingWeek);
-
-      existingWeekBtcd.totalRealBtc += lockedBTC;
-      existingWeekBtcd.totalTokenAmount += btcdAmount;
-      weeklyBtcdStats.set(weekTimestamp, existingWeekBtcd);
-
-      const monthTimestamp = getUnitStartTimestamp(r.details.borrowedTime, 'month');
-      const existingMonth = monthlyBorrowedStats.get(monthTimestamp) || { count: 0, totalRealBtc: 0, totalTokenAmount: 0 };
-      const existingMonthBtcd = monthlyBtcdStats.get(monthTimestamp) || { totalRealBtc: 0, totalTokenAmount: 0 };
-
-      existingMonth.count += 1;
-      existingMonth.totalRealBtc += lockedBTC;
-      existingMonth.totalTokenAmount += btcdAmount;
-      monthlyBorrowedStats.set(monthTimestamp, existingMonth);
-
-      existingMonthBtcd.totalRealBtc += lockedBTC;
-      existingMonthBtcd.totalTokenAmount += btcdAmount;
-      monthlyBtcdStats.set(monthTimestamp, existingMonthBtcd);
-
-      // 订单已还款，需要解锁btc并销毁btcd
-      if (r.details.borrowerRepaidTime) {
-        const dayTimestamp = getUnitStartTimestamp(r.details.borrowerRepaidTime, 'day');
-        const existingBtcd = dailyBtcdStats.get(dayTimestamp) || { totalRealBtc: 0, totalTokenAmount: 0 };
-
-        existingBtcd.totalRealBtc -= parseFloat(r.details.realBtcAmount || '0');
-        existingBtcd.totalTokenAmount -= parseFloat(r.tokenAmount || '0');;
-        dailyBtcdStats.set(dayTimestamp, existingBtcd);
-
-        const weekTimestamp = getUnitStartTimestamp(r.details.borrowerRepaidTime, 'week');
-        const existingWeekBtcd = weeklyBtcdStats.get(weekTimestamp) || { totalRealBtc: 0, totalTokenAmount: 0 };
-
-        existingWeekBtcd.totalRealBtc -= parseFloat(r.details.realBtcAmount || '0');
-        existingWeekBtcd.totalTokenAmount -= parseFloat(r.tokenAmount || '0');
-        weeklyBtcdStats.set(weekTimestamp, existingWeekBtcd);
-
-        const monthTimestamp = getUnitStartTimestamp(r.details.borrowerRepaidTime, 'month');
-        const existingMonthBtcd = monthlyBtcdStats.get(monthTimestamp) || { totalRealBtc: 0, totalTokenAmount: 0 };
-
-        existingMonthBtcd.totalRealBtc -= parseFloat(r.details.realBtcAmount || '0');
-        existingMonthBtcd.totalTokenAmount -= parseFloat(r.tokenAmount || '0');
-        monthlyBtcdStats.set(monthTimestamp, existingMonthBtcd);
-      }
+    if (r.details.borrowerRepaidTime) {
+      const dayTs = getUnitStartTimestamp(r.details.borrowerRepaidTime, 'day');
+      const eb = dailyBtcdStats.get(dayTs) || { totalRealBtc: 0, totalTokenAmount: 0 };
+      eb.totalRealBtc -= parseFloat(r.details.realBtcAmount || '0');
+      eb.totalTokenAmount -= parseFloat(r.tokenAmount || '0');
+      dailyBtcdStats.set(dayTs, eb);
+      const weekTs = getUnitStartTimestamp(r.details.borrowerRepaidTime, 'week');
+      const ewb = weeklyBtcdStats.get(weekTs) || { totalRealBtc: 0, totalTokenAmount: 0 };
+      ewb.totalRealBtc -= parseFloat(r.details.realBtcAmount || '0');
+      ewb.totalTokenAmount -= parseFloat(r.tokenAmount || '0');
+      weeklyBtcdStats.set(weekTs, ewb);
+      const monthTs = getUnitStartTimestamp(r.details.borrowerRepaidTime, 'month');
+      const emb = monthlyBtcdStats.get(monthTs) || { totalRealBtc: 0, totalTokenAmount: 0 };
+      emb.totalRealBtc -= parseFloat(r.details.realBtcAmount || '0');
+      emb.totalTokenAmount -= parseFloat(r.tokenAmount || '0');
+      monthlyBtcdStats.set(monthTs, emb);
     }
   });
 
-  // 转换为数组并按日期排序（用于趋势图）
-  const dailyBorrowedArray = Array.from(dailyBorrowedStats.entries())
-    .map(([timestamp, data]) => ({
-      date: formatTimestampDisplay(timestamp, 'day'),
-      timestamp,
-      count: data.count,
-      totalRealBtc: data.totalRealBtc,
-      totalTokenAmount: data.totalTokenAmount
-    }))
-    .sort((a, b) => a.timestamp - b.timestamp);
+  const toDay = (ts: number, data: any) => ({ date: formatTimestampDisplay(ts, 'day'), timestamp: ts, ...data });
+  const toWeek = (ts: number, data: any) => ({ date: formatTimestampDisplay(ts, 'week'), timestamp: ts, ...data });
+  const toMonth = (ts: number, data: any) => ({ date: formatTimestampDisplay(ts, 'month'), timestamp: ts, ...data });
+  const sortByTs = (a: { timestamp: number }, b: { timestamp: number }) => a.timestamp - b.timestamp;
 
-  // 打印每日借出统计
-  console.log(`\n===== 每日借出订单统计 (共 ${dailyBorrowedArray.length} 天) =====`);
-  dailyBorrowedArray.slice(-7).reverse().forEach(day => {
-    console.log(`  ${day.date}: 订单数=${day.count}, BTC=${day.totalRealBtc.toFixed(4)}, BTCD=${day.totalTokenAmount.toFixed(2)}`);
-  });
+  const dailyBorrowedArray = Array.from(dailyBorrowedStats.entries()).map(([timestamp, data]) => toDay(timestamp, data)).sort(sortByTs);
+  const dailyBtcdArray = Array.from(dailyBtcdStats.entries()).map(([timestamp, data]) => toDay(timestamp, data)).sort(sortByTs);
+  const weeklyBorrowedArray = Array.from(weeklyBorrowedStats.entries()).map(([timestamp, data]) => toWeek(timestamp, data)).sort(sortByTs);
+  const weeklyBtcdArray = Array.from(weeklyBtcdStats.entries()).map(([timestamp, data]) => toWeek(timestamp, data)).sort(sortByTs);
+  const monthlyBorrowedArray = Array.from(monthlyBorrowedStats.entries()).map(([timestamp, data]) => toMonth(timestamp, data)).sort(sortByTs);
+  const monthlyBtcdArray = Array.from(monthlyBtcdStats.entries()).map(([timestamp, data]) => toMonth(timestamp, data)).sort(sortByTs);
 
-  // 转换为数组并按日期排序（用于趋势图）
-  const dailyBtcdArray = Array.from(dailyBtcdStats.entries())
-    .map(([timestamp, data]) => ({
-      date: formatTimestampDisplay(timestamp, 'day'),
-      timestamp,
-      totalRealBtc: data.totalRealBtc,
-      totalTokenAmount: data.totalTokenAmount
-    }))
-    .sort((a, b) => a.timestamp - b.timestamp);
+  return {
+    dailyBorrowedArray,
+    dailyBtcdArray,
+    weeklyBorrowedArray,
+    weeklyBtcdArray,
+    monthlyBorrowedArray,
+    monthlyBtcdArray
+  };
+}
 
-  // 打印每日BTCD统计 (注意：有些订单未使用Discount，所以存在totalRealBtc为正，但totalTokenAmount为负的情况)
-  console.log(`\n===== 每日 BTCD 增量统计 (共 ${dailyBtcdArray.length} 天) =====`);
-  dailyBtcdArray.slice(-7).reverse().forEach(day => {
-    console.log(`  ${day.date}: BTC=${day.totalRealBtc.toFixed(4)}, BTCD=${day.totalTokenAmount.toFixed(2)}`);
-  });
+const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 
-  // 转换为数组并按日期排序（用于趋势图）
-  const weeklyBorrowedArray = Array.from(weeklyBorrowedStats.entries())
-    .map(([timestamp, data]) => ({
-      date: formatTimestampDisplay(timestamp, 'week'),
-      timestamp,
-      count: data.count,
-      totalRealBtc: data.totalRealBtc,
-      totalTokenAmount: data.totalTokenAmount
-    }))
-    .sort((a, b) => a.timestamp - b.timestamp);
-
-  // 打印每周借出订单统计
-  console.log(`\n===== 每周借出订单统计 (共 ${weeklyBorrowedArray.length} 周) =====`);
-  weeklyBorrowedArray.slice(-7).reverse().forEach(week => {
-  // weeklyBorrowedArray.reverse().forEach(week => {
-    console.log(`  ${week.date}: 订单数=${week.count}, BTC=${week.totalRealBtc.toFixed(4)}, BTCD=${week.totalTokenAmount.toFixed(2)}`);
-  });
-
-  // 转换为数组并按日期排序（用于趋势图）
-  const weeklyBtcdArray = Array.from(weeklyBtcdStats.entries())
-    .map(([timestamp, data]) => ({
-      date: formatTimestampDisplay(timestamp, 'week'),
-      timestamp,
-      totalRealBtc: data.totalRealBtc,
-      totalTokenAmount: data.totalTokenAmount
-    }))
-    .sort((a, b) => a.timestamp - b.timestamp);
-
-
-  // 打印每周BTCD统计
-  console.log(`\n===== 每周 BTCD 增量统计 (共 ${weeklyBtcdArray.length} 周) =====`);
-  weeklyBtcdArray.slice(-7).reverse().forEach(week => {
-  // weeklyBtcdArray.reverse().forEach(week => {
-    console.log(`  ${week.date}: BTC=${week.totalRealBtc.toFixed(4)}, BTCD=${week.totalTokenAmount.toFixed(2)}`);
-  });
-
-
-  const monthlyBorrowedArray = Array.from(monthlyBorrowedStats.entries())
-    .map(([timestamp, data]) => ({
-      date: formatTimestampDisplay(timestamp, 'month'),
-      timestamp,
-      count: data.count,
-      totalRealBtc: data.totalRealBtc,
-      totalTokenAmount: data.totalTokenAmount
-    }))
-    .sort((a, b) => a.timestamp - b.timestamp);
-
-  // 打印每月借出订单统计
-  console.log(`\n===== 每月借出订单统计 (共 ${monthlyBorrowedArray.length} 月) =====`);
-  monthlyBorrowedArray.slice(-7).reverse().forEach(month => {
-    console.log(`  ${month.date}: 订单数=${month.count}, BTC=${month.totalRealBtc.toFixed(4)}, BTCD=${month.totalTokenAmount.toFixed(2)}`);
-  });
-
-  // 转换为数组并按日期排序（用于趋势图）
-  const monthlyBtcdArray = Array.from(monthlyBtcdStats.entries())
-    .map(([timestamp, data]) => ({
-      date: formatTimestampDisplay(timestamp, 'month'),
-      timestamp,
-      totalRealBtc: data.totalRealBtc,
-      totalTokenAmount: data.totalTokenAmount
-    }))
-    .sort((a, b) => a.timestamp - b.timestamp);
-
-  // 打印每月BTCD统计
-  console.log(`\n===== 每月 BTCD 增量统计 (共 ${monthlyBtcdArray.length} 月) =====`);
-  monthlyBtcdArray.slice(-7).reverse().forEach(month => {
-    console.log(`  ${month.date}: BTC=${month.totalRealBtc.toFixed(4)}, BTCD=${month.totalTokenAmount.toFixed(2)}`);
-  });
-
-  // ===== 用户统计 (基于 details.borrower) =====
-  // 零地址常量
-  const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
-
-  // 筛选有效的用户订单（borrower 不为空且不是零地址，且已被 take）
+/** 用户统计（EVM 借款人 + BTC 用户） */
+function computeUserStats(allRecords: OrderRecord[]): {
+  userOrders: OrderRecord[];
+  totalUsers: number;
+  dailyNewUsersArray: { date: string; timestamp: number; count: number }[];
+  weeklyNewUsersArray: { date: string; timestamp: number; count: number }[];
+  userOrderRanking: { user: string; count: number }[];
+  totalBTCUsers: number;
+  btcuserOrderRanking: { user: string; count: number }[];
+} {
   const userOrders = allRecords.filter(r =>
     r.details?.borrower &&
     r.details.borrower !== ZERO_ADDRESS &&
     r.details.takenTime > 0
   );
-
-  // 1. 统计用户总数 (去重)
   const uniqueUsers = new Set(userOrders.map(r => r.details!.borrower.toLowerCase()));
   const totalUsers = uniqueUsers.size;
 
-  // 2. 统计每天/每周用户增加数
-  // 按用户首次 take 订单时间分组
-  const userFirstTakenTime: Map<string, number> = new Map();
+  const userFirstTakenTime = new Map<string, number>();
   userOrders.forEach(r => {
     const user = r.details!.borrower.toLowerCase();
     const takenTime = r.details!.takenTime;
     const existing = userFirstTakenTime.get(user);
-    if (!existing || takenTime < existing) {
-      userFirstTakenTime.set(user, takenTime);
-    }
+    if (!existing || takenTime < existing) userFirstTakenTime.set(user, takenTime);
   });
 
-  // 按天统计新用户
-  const dailyNewUsers: Map<number, Set<string>> = new Map();
-  const weeklyNewUsers: Map<number, Set<string>> = new Map();
-
+  const dailyNewUsers = new Map<number, Set<string>>();
+  const weeklyNewUsers = new Map<number, Set<string>>();
   userFirstTakenTime.forEach((firstTakenTime, user) => {
     const dayTimestamp = getUnitStartTimestamp(firstTakenTime, 'day');
     const weekTimestamp = getUnitStartTimestamp(firstTakenTime, 'week');
-
-    if (!dailyNewUsers.has(dayTimestamp)) {
-      dailyNewUsers.set(dayTimestamp, new Set());
-    }
+    if (!dailyNewUsers.has(dayTimestamp)) dailyNewUsers.set(dayTimestamp, new Set());
     dailyNewUsers.get(dayTimestamp)!.add(user);
-
-    if (!weeklyNewUsers.has(weekTimestamp)) {
-      weeklyNewUsers.set(weekTimestamp, new Set());
-    }
+    if (!weeklyNewUsers.has(weekTimestamp)) weeklyNewUsers.set(weekTimestamp, new Set());
     weeklyNewUsers.get(weekTimestamp)!.add(user);
   });
 
-  // 转换为数组并按日期排序
   const dailyNewUsersArray = Array.from(dailyNewUsers.entries())
-    .map(([timestamp, users]) => ({
-      date: formatTimestampDisplay(timestamp, 'day'),
-      timestamp,
-      count: users.size
-    }))
+    .map(([timestamp, users]) => ({ date: formatTimestampDisplay(timestamp, 'day'), timestamp, count: users.size }))
     .sort((a, b) => a.timestamp - b.timestamp);
-
   const weeklyNewUsersArray = Array.from(weeklyNewUsers.entries())
-    .map(([timestamp, users]) => ({
-      date: formatTimestampDisplay(timestamp, 'week'),
-      timestamp,
-      count: users.size
-    }))
+    .map(([timestamp, users]) => ({ date: formatTimestampDisplay(timestamp, 'week'), timestamp, count: users.size }))
     .sort((a, b) => a.timestamp - b.timestamp);
 
-  // 3. 用户 take 订单数排行榜
-  const userOrderCount: Map<string, number> = new Map();
+  const userOrderCount = new Map<string, number>();
   userOrders.forEach(r => {
     const user = r.details!.borrower.toLowerCase();
     userOrderCount.set(user, (userOrderCount.get(user) || 0) + 1);
   });
-
-  // 按订单数量降序排序
   const userOrderRanking = Array.from(userOrderCount.entries())
     .map(([user, count]) => ({ user, count }))
     .sort((a, b) => b.count - a.count);
 
-  // 打印用户统计
-  console.log(`\n===== 用户统计 (Borrower) =====`);
-  console.log(`用户总数: ${formatWithCommas(totalUsers, 0)}`);
-  console.log(`用户订单总数: ${formatWithCommas(userOrders.length, 0)}`);
-
-  // 打印每日新增用户
-  console.log(`\n===== 每日新增用户 (共 ${dailyNewUsersArray.length} 天) =====`);
-  dailyNewUsersArray.slice(-7).reverse().forEach(day => {
-    console.log(`  ${day.date}: 新增用户数=${day.count}`);
-  });
-
-  // 打印每周新增用户
-  console.log(`\n===== 每周新增用户 (共 ${weeklyNewUsersArray.length} 周) =====`);
-  weeklyNewUsersArray.reverse().forEach(week => {
-    console.log(`  ${week.date}: 新增用户数=${week.count}`);
-  });
-
-  // 打印用户 take 订单数排行榜 (Top 20)
-  console.log(`\n===== 用户 Take 订单数排行榜 (Top 20) =====`);
-  userOrderRanking.slice(0, 20).forEach((item, index) => {
-    console.log(`  ${(index + 1).toString().padStart(2, ' ')}. ${item.user}: ${formatWithCommas(item.count, 0)} 单`);
-  });
-
-  // 1. 统计BTC用户总数 (去重)
   const uniqueBTCUsers = new Set(userOrders.map(r => r.details!.borrowerBtcAddress.toLowerCase()));
   const totalBTCUsers = uniqueBTCUsers.size;
-
-  // 2. BTC用户 take 订单数排行榜
-  const btcuserOrderCount: Map<string, number> = new Map();
+  const btcuserOrderCount = new Map<string, number>();
   userOrders.forEach(r => {
     const user = r.details!.borrowerBtcAddress.toLowerCase();
     btcuserOrderCount.set(user, (btcuserOrderCount.get(user) || 0) + 1);
   });
-
-  // 按订单数量降序排序
   const btcuserOrderRanking = Array.from(btcuserOrderCount.entries())
     .map(([user, count]) => ({ user, count }))
     .sort((a, b) => b.count - a.count);
 
-  // 打印BTC用户总数
-  console.log(`\n===== BTC用户总数 =====`);
-  console.log(`BTC用户总数: ${formatWithCommas(totalBTCUsers, 0)}`);
+  return {
+    userOrders,
+    totalUsers,
+    dailyNewUsersArray,
+    weeklyNewUsersArray,
+    userOrderRanking,
+    totalBTCUsers,
+    btcuserOrderRanking
+  };
+}
 
-  // 打印用户 take 订单数排行榜 (Top 20)
-  console.log(`\n===== BTC用户 Take 订单数排行榜 (Top 20) =====`);
-  btcuserOrderRanking.slice(0, 20).forEach((item, index) => {
+function printTimeSeriesStats(ts: ReturnType<typeof buildTimeSeriesStats>): void {
+  console.log(`\n===== 每日借出订单统计 (共 ${ts.dailyBorrowedArray.length} 天) =====`);
+  ts.dailyBorrowedArray.slice(-7).reverse().forEach(day => {
+    console.log(`  ${day.date}: 订单数=${day.count}, BTC=${day.totalRealBtc.toFixed(4)}, BTCD=${day.totalTokenAmount.toFixed(2)}`);
+  });
+  console.log(`\n===== 每日 BTCD 增量统计 (共 ${ts.dailyBtcdArray.length} 天) =====`);
+  ts.dailyBtcdArray.slice(-7).reverse().forEach(day => {
+    console.log(`  ${day.date}: BTC=${day.totalRealBtc.toFixed(4)}, BTCD=${day.totalTokenAmount.toFixed(2)}`);
+  });
+  console.log(`\n===== 每周借出订单统计 (共 ${ts.weeklyBorrowedArray.length} 周) =====`);
+  ts.weeklyBorrowedArray.slice(-7).reverse().forEach(week => {
+    console.log(`  ${week.date}: 订单数=${week.count}, BTC=${week.totalRealBtc.toFixed(4)}, BTCD=${week.totalTokenAmount.toFixed(2)}`);
+  });
+  console.log(`\n===== 每周 BTCD 增量统计 (共 ${ts.weeklyBtcdArray.length} 周) =====`);
+  ts.weeklyBtcdArray.slice(-7).reverse().forEach(week => {
+    console.log(`  ${week.date}: BTC=${week.totalRealBtc.toFixed(4)}, BTCD=${week.totalTokenAmount.toFixed(2)}`);
+  });
+  console.log(`\n===== 每月借出订单统计 (共 ${ts.monthlyBorrowedArray.length} 月) =====`);
+  ts.monthlyBorrowedArray.slice(-7).reverse().forEach(month => {
+    console.log(`  ${month.date}: 订单数=${month.count}, BTC=${month.totalRealBtc.toFixed(4)}, BTCD=${month.totalTokenAmount.toFixed(2)}`);
+  });
+  console.log(`\n===== 每月 BTCD 增量统计 (共 ${ts.monthlyBtcdArray.length} 月) =====`);
+  ts.monthlyBtcdArray.slice(-7).reverse().forEach(month => {
+    console.log(`  ${month.date}: BTC=${month.totalRealBtc.toFixed(4)}, BTCD=${month.totalTokenAmount.toFixed(2)}`);
+  });
+}
+
+function printUserStats(us: ReturnType<typeof computeUserStats>): void {
+  console.log(`\n===== 用户统计 (Borrower) =====`);
+  console.log(`用户总数: ${formatWithCommas(us.totalUsers, 0)}`);
+  console.log(`用户订单总数: ${formatWithCommas(us.userOrders.length, 0)}`);
+  console.log(`\n===== 每日新增用户 (共 ${us.dailyNewUsersArray.length} 天) =====`);
+  us.dailyNewUsersArray.slice(-7).reverse().forEach(day => {
+    console.log(`  ${day.date}: 新增用户数=${day.count}`);
+  });
+  console.log(`\n===== 每周新增用户 (共 ${us.weeklyNewUsersArray.length} 周) =====`);
+  us.weeklyNewUsersArray.slice().reverse().forEach(week => {
+    console.log(`  ${week.date}: 新增用户数=${week.count}`);
+  });
+  console.log(`\n===== 用户 Take 订单数排行榜 (Top 20) =====`);
+  us.userOrderRanking.slice(0, 20).forEach((item, index) => {
     console.log(`  ${(index + 1).toString().padStart(2, ' ')}. ${item.user}: ${formatWithCommas(item.count, 0)} 单`);
   });
+  console.log(`\n===== BTC用户总数 =====`);
+  console.log(`BTC用户总数: ${formatWithCommas(us.totalBTCUsers, 0)}`);
+  console.log(`\n===== BTC用户 Take 订单数排行榜 (Top 20) =====`);
+  us.btcuserOrderRanking.slice(0, 20).forEach((item, index) => {
+    console.log(`  ${(index + 1).toString().padStart(2, ' ')}. ${item.user}: ${formatWithCommas(item.count, 0)} 单`);
+  });
+}
+
+async function main() {
+  const args = process.argv.slice(2);
+  const { orderType, limit, beforeBlock, fetchAll, skipTimestamp, fetchDetails } = parseMainArgs(args);
+
+  const startTime = Date.now();
+  console.log(`\n===== 获取 OrderCreated 事件 [网络: ${network}] =====`);
+
+  const provider = new (ethers as any).providers.JsonRpcProvider(RPC_URL);
+  const outputFile = `data/${network}/btcd_order_stats.json`;
+
+  const currentBlock: number = await provider.getBlockNumber();
+  console.log(`当前区块高度: ${currentBlock}`);
+
+  const { existingRecords, savedCurrentBlock } = loadExistingOrderData(outputFile);
+  let beforeBlockRes = beforeBlock;
+  if (beforeBlockRes === undefined && savedCurrentBlock > 0) {
+    beforeBlockRes = savedCurrentBlock;
+  }
+
+  console.log(`\n获取从区块 ${beforeBlockRes ? beforeBlockRes + 1 : INITIAL_START_BLOCK} 到 ${currentBlock} 的新订单...`);
+  const { records: newRecords } = await getOrderCreatedLogs(provider, currentBlock, {
+    orderType,
+    limit,
+    beforeBlock: beforeBlockRes,
+    fetchAll,
+    skipTimestamp,
+    fetchDetails: true
+  });
+  console.log(`\n找到 ${newRecords.length} 条新订单`);
+
+  const { allRecords, updatedDetailsMap } = await updateDetailsAndMergeRecords(provider, existingRecords, newRecords);
+
+  const nowTimestamp = Math.floor(Date.now() / 1000);
+  const derived = computeDerivedOrderLists(allRecords, nowTimestamp);
+  const overdueRanks = computeOverdueRankings(derived.alloverdueOrders);
+  const limitedDays180AfterStart = computeLimitedDays180AfterStart(allRecords);
+  const stats = buildOrderStats(allRecords, derived, limitedDays180AfterStart);
+
+  const timeSeries = buildTimeSeriesStats(allRecords);
+  const userStatsData = computeUserStats(allRecords);
+
+  printTimeSeriesStats(timeSeries);
+  printUserStats(userStatsData);
 
   console.log(`\n===== 订单统计 =====`);
   console.log(`总订单数: ${formatWithCommas(stats.totalOrders, 0)}`);
@@ -1122,8 +1086,8 @@ async function main() {
   console.log(`  抵押 BTC: ${formatWithCommas(stats.overdueStats.collateral, 8)} BTC`);
   console.log(`  BTCD数量: ${formatWithCommas(stats.overdueStats.tokenAmount, 2)}`);
 
-  const overdueRankBorrowerTop10 = overdueRankByBorrower.slice(0, 10);
-  const overdueRankBtcTop10 = overdueRankByBorrowerBtcAddress.slice(0, 10);
+  const overdueRankBorrowerTop10 = overdueRanks.overdueRankByBorrower.slice(0, 10);
+  const overdueRankBtcTop10 = overdueRanks.overdueRankByBorrowerBtcAddress.slice(0, 10);
   if (overdueRankBorrowerTop10.length > 0) {
     console.log(`过期排行 Top10 (EVM 用户 borrower):`);
     overdueRankBorrowerTop10.forEach((item, i) => {
@@ -1156,13 +1120,10 @@ async function main() {
   // console.log(`已还款订单ID: ${Array.from(repaidOrderIDs).join(', ')}`);
 
   if (allRecords.length > 0) {
-    // 构建用户统计对象
     const userStats = {
-      totalUsers,
-      totalUserOrders: userOrders.length,
-      // dailyNewUsers: dailyNewUsersArray,
-      // weeklyNewUsers: weeklyNewUsersArray,
-      userOrderRanking: userOrderRanking.slice(0, 20) // 保存 Top 20
+      totalUsers: userStatsData.totalUsers,
+      totalUserOrders: userStatsData.userOrders.length,
+      userOrderRanking: userStatsData.userOrderRanking.slice(0, 10)
     };
 
     // 保存到文件
@@ -1173,8 +1134,8 @@ async function main() {
       currentBlock,
       fetchedDetails: true,
       records: allRecords,
-      liquidatedOrders: liquidatedOrders,
-      overdueOrders: overdueOrders
+      liquidatedOrders: derived.liquidatedOrders,
+      overdueOrders: derived.overdueOrders
     }, null, 2));
     console.log(`\n记录已保存到 ${outputFile}`);
     console.log(`本次新增订单: ${formatWithCommas(newRecords.length, 0)} 条`);
