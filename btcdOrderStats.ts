@@ -124,6 +124,8 @@ interface OrderDetails {
   limitedDays: number;          // 订单期限（天）
   orderPeriod: number;          // 订单实际时长（天）= borrowerRepaidTime - borrowedTime，未还款则为 0
   orderPeriodStr: string;      // 订单实际时长字符串，如 "12.31天"
+  orderActualDuration: number; // 订单实际时长（天）= 当前时间 - 借款时间，如果还款截止时间小于当前时间，则取还款截止时间 - 借款时间
+  orderActualDurationStr: string; // 订单实际时长字符串，如 "12.31天"
   realBtcAmount: string;        // toLenderBtcTx.amount (BTC)
   realBtcAmountRaw: string;     // 原始值 (satoshi)
   useDiscount: boolean;         // collateral == toLenderBtcTx.amount
@@ -173,6 +175,8 @@ async function fetchOrderDetailsWithMulticall(
   console.log(`\n使用 Multicall3 获取 ${orderIds.length} 个订单的详细信息...`);
   // console.log(`Multicall3 地址: ${MULTICALL3_ADDRESS}`);
   console.log(`每批次处理: ${MULTICALL_BATCH_SIZE} 个订单`);
+
+  const nowTimestamp = Math.floor(Date.now() / 1000);
 
   // 分批处理订单
   for (let i = 0; i < orderIds.length; i += MULTICALL_BATCH_SIZE) {
@@ -283,6 +287,21 @@ async function fetchOrderDetailsWithMulticall(
               : 0;
           const orderPeriodStr = `${orderPeriod.toFixed(2)}天`;
 
+          // 订单实际时长（天）= 当前时间 - 借款时间，如果还款截止时间小于当前时间，则取还款截止时间 - 借款时间
+          let orderActualDuration = 0;
+          if (borrowedTime > 0) {
+            if (orderPeriod > 0) { // 已还款
+              orderActualDuration = orderPeriod;
+            } else { // 未还款
+              if (deadLinesData.repayDeadLine < nowTimestamp) {
+                orderActualDuration = (deadLinesData.repayDeadLine - borrowedTime) / 86400; // 已逾期
+              } else {
+                orderActualDuration = (nowTimestamp - borrowedTime) / 86400; // 未逾期
+              }
+            }
+          }
+          const orderActualDurationStr = `${orderActualDuration.toFixed(2)}天`;
+
           const orderIdLower = orderId.toLowerCase();
           const useDiscount = collateralByOrderId
             ? realBtcAmountRaw === (collateralByOrderId.get(orderIdLower) ?? '')
@@ -307,6 +326,8 @@ async function fetchOrderDetailsWithMulticall(
             limitedDays,
             orderPeriod,
             orderPeriodStr,
+            orderActualDuration,
+            orderActualDurationStr,
             realBtcAmount,
             realBtcAmountRaw,
             useDiscount
@@ -595,6 +616,8 @@ interface DerivedOrderLists {
   avgOrderPeriodStr: string;
   avgOrderPeriodDaysBiggerThan10: number;
   avgOrderPeriodStrBiggerThan10: string;
+  avgValidOrderActualDurationDays: number;
+  avgValidOrderActualDurationStr: string;
 }
 
 function computeDerivedOrderLists(allRecords: OrderRecord[], nowTimestamp: number): DerivedOrderLists {
@@ -630,6 +653,11 @@ function computeDerivedOrderLists(allRecords: OrderRecord[], nowTimestamp: numbe
   const avgOrderPeriodDaysBiggerThan10 = btcdRepaidOrdersAmountBiggerThan10List.length > 0 ? totalOrderPeriodDaysBiggerThan10 / btcdRepaidOrdersAmountBiggerThan10List.length : 0;
   const avgOrderPeriodStrBiggerThan10 = `${avgOrderPeriodDaysBiggerThan10.toFixed(2)}天`;
 
+  const btcdValidOrdersAmountBiggerThan10List = validOrdersList.filter(r => parseFloat(r.tokenAmount) > 10 && r.details?.limitedDays >= 90);
+  const totalValidOrderActualDurationDays = btcdValidOrdersAmountBiggerThan10List.reduce((sum, r) => sum + (r.details?.orderActualDuration ?? 0), 0);
+  const avgValidOrderActualDurationDays = btcdValidOrdersAmountBiggerThan10List.length > 0 ? totalValidOrderActualDurationDays / btcdValidOrdersAmountBiggerThan10List.length : 0;
+  const avgValidOrderActualDurationStr = `${avgValidOrderActualDurationDays.toFixed(2)}天`;
+
   return {
     borrowedOrders,
     repaidOrders,
@@ -643,7 +671,9 @@ function computeDerivedOrderLists(allRecords: OrderRecord[], nowTimestamp: numbe
     avgOrderPeriodDays,
     avgOrderPeriodStr,
     avgOrderPeriodDaysBiggerThan10,
-    avgOrderPeriodStrBiggerThan10
+    avgOrderPeriodStrBiggerThan10,
+    avgValidOrderActualDurationDays,
+    avgValidOrderActualDurationStr
   };
 }
 
@@ -709,7 +739,9 @@ function buildOrderStats(
     avgOrderPeriodDays,
     avgOrderPeriodStr,
     avgOrderPeriodDaysBiggerThan10,
-    avgOrderPeriodStrBiggerThan10
+    avgOrderPeriodStrBiggerThan10,
+    avgValidOrderActualDurationDays,
+    avgValidOrderActualDurationStr
   } = derived;
 
   return {
@@ -733,6 +765,8 @@ function buildOrderStats(
     avgOrderPeriodStr,
     avgOrderPeriodDaysBiggerThan10,
     avgOrderPeriodStrBiggerThan10,
+    avgValidOrderActualDurationDays,
+    avgValidOrderActualDurationStr,
     firstOrderBlock: allRecords.length > 0 ? allRecords[0].blockNumber : null,
     lastOrderBlock: allRecords.length > 0 ? allRecords[allRecords.length - 1].blockNumber : null,
     firstOrderTime: allRecords.length > 0 ? allRecords[0].timestampStr : null,
@@ -1059,6 +1093,7 @@ async function main() {
   console.log(`锁定在订单中的BTCD总量: ${formatWithCommas(stats.lockedInOrdersBTCD, 2)}`);
   console.log(`已还款订单的平均实际时长: ${stats.avgOrderPeriodStr}`);
   console.log(`已还款订单的平均实际时长 (大于10 BTCD): ${stats.avgOrderPeriodStrBiggerThan10}`);
+  console.log(`所有订单的平均实际时长: ${stats.avgValidOrderActualDurationStr}`);
 
 
   if (stats.firstOrderTime) {
