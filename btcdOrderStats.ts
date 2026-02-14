@@ -744,6 +744,8 @@ function buildOrderStats(
     avgValidOrderActualDurationStr
   } = derived;
 
+  const lockedInOrdersBTCDList = allRecords.filter(r => r.details?.status !== OrderStatus.BORROWED && r.details?.status !== OrderStatus.CLOSED);
+
   return {
     totalOrders: allRecords.length,
     validOrders: validOrdersList.length,
@@ -759,7 +761,8 @@ function buildOrderStats(
     activeTokenAmount: allRecords.filter(r => r.details?.status !== OrderStatus.CLOSED).reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0),
     currentMintedBTCD: allRecords.filter(r => r.details?.status !== OrderStatus.CLOSED).reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0) +
       liquidatedOrders.reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0),
-    lockedInOrdersBTCD: allRecords.filter(r => r.details?.status !== OrderStatus.BORROWED && r.details?.status !== OrderStatus.CLOSED).reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0),
+    lockedInOrdersBTCD: lockedInOrdersBTCDList.reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0),
+    lockedInOrdersBTCDCount: lockedInOrdersBTCDList.length,
     uniqueTokens: [...new Set(allRecords.map(r => r.token))],
     avgOrderPeriodDays,
     avgOrderPeriodStr,
@@ -1090,7 +1093,7 @@ async function main() {
   console.log(`累计BTCD铸造总量: ${formatWithCommas(stats.totalTokenAmount, 2)}`);
   console.log(`活跃订单铸造BTCD数量: ${formatWithCommas(stats.activeTokenAmount, 2)}`);
   console.log(`订单铸造BTCD总量（活跃订单 + 已清算订单）: ${formatWithCommas(stats.currentMintedBTCD, 2)}`);
-  console.log(`锁定在订单中的BTCD总量: ${formatWithCommas(stats.lockedInOrdersBTCD, 2)}`);
+  console.log(`锁定在订单中的BTCD总量: ${formatWithCommas(stats.lockedInOrdersBTCD, 2)}, 订单数量: ${stats.lockedInOrdersBTCDCount}`);
   console.log(`已还款订单的平均实际时长: ${stats.avgOrderPeriodStr}`);
   console.log(`已还款订单的平均实际时长 (大于10 BTCD): ${stats.avgOrderPeriodStrBiggerThan10}`);
   console.log(`所有订单的平均实际时长: ${stats.avgValidOrderActualDurationStr}`);
@@ -1124,13 +1127,13 @@ async function main() {
   const overdueRankBorrowerTop10 = overdueRanks.overdueRankByBorrower.slice(0, 10);
   const overdueRankBtcTop10 = overdueRanks.overdueRankByBorrowerBtcAddress.slice(0, 10);
   if (overdueRankBorrowerTop10.length > 0) {
-    console.log(`过期排行 Top10 (EVM 用户 borrower):`);
+    console.log(`\n过期排行 Top10 (EVM 用户 borrower):`);
     overdueRankBorrowerTop10.forEach((item, i) => {
       console.log(`    ${i + 1}. ${item.address} 过期订单数: ${item.count}`);
     });
   }
   if (overdueRankBtcTop10.length > 0) {
-    console.log(`过期排行 Top10 (BTC 用户 borrowerBtcAddress):`);
+    console.log(`\n过期排行 Top10 (BTC 用户 borrowerBtcAddress):`);
     overdueRankBtcTop10.forEach((item, i) => {
       console.log(`    ${i + 1}. ${item.address} 过期订单数: ${item.count}`);
     });
