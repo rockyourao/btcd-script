@@ -48,6 +48,10 @@ const multicall3Abi = require('./abi/Multicall3.json').abi;
 // event OrderCreated(address indexed orderId, OrderType indexed orderType, uint256 collateral, address token, uint256 tokenAmount)
 const ORDER_CREATED_TOPIC = ethers.utils.id('OrderCreated(address,uint8,uint256,address,uint256)');
 
+// OrderDelayed 事件签名
+// event OrderDelayed(bytes32 indexed newBtcTxId);
+const ORDER_DELAYED_TOPIC = ethers.utils.id('OrderDelayed(bytes32)');
+
 // 订单类型枚举
 enum OrderType {
   Borrow = 0,
@@ -129,6 +133,7 @@ interface OrderDetails {
   realBtcAmount: string;        // toLenderBtcTx.amount (BTC)
   realBtcAmountRaw: string;     // 原始值 (satoshi)
   useDiscount: boolean;         // collateral == toLenderBtcTx.amount
+  isDelayed: boolean;           // 是否已延迟
 }
 
 interface QueryOptions {
@@ -307,6 +312,8 @@ async function fetchOrderDetailsWithMulticall(
             ? realBtcAmountRaw === (collateralByOrderId.get(orderIdLower) ?? '')
             : false;
 
+          const isDelayed = borrowedTime > 0 && (deadLinesData.borrowDeadLine - takenTime) / 86400 > limitedDays ? true : false;
+
           orderDetailsMap.set(orderIdLower, {
             status,
             statusName: OrderStatusNames[status] || 'Unknown',
@@ -330,7 +337,8 @@ async function fetchOrderDetailsWithMulticall(
             orderActualDurationStr,
             realBtcAmount,
             realBtcAmountRaw,
-            useDiscount
+            useDiscount,
+            isDelayed
           });
         } catch (decodeError) {
           console.error(`解码订单 ${orderId} 详情失败:`, decodeError);
@@ -612,6 +620,7 @@ interface DerivedOrderLists {
   discountOrdersList: OrderRecord[];
   takenOrdersList: OrderRecord[];
   btcdRepaidOrdersList: OrderRecord[];
+  delayedOrdersList: OrderRecord[];
   avgOrderPeriodDays: number;
   avgOrderPeriodStr: string;
   avgOrderPeriodDaysBiggerThan10: number;
@@ -643,6 +652,7 @@ function computeDerivedOrderLists(allRecords: OrderRecord[], nowTimestamp: numbe
   const discountOrdersList = validOrdersList.filter(r => r.details?.useDiscount === true);
   const takenOrdersList = allRecords.filter(r => r.details?.takenTime > 0);
   const btcdRepaidOrdersList = allRecords.filter(r => r.details?.borrowerRepaidTime > 0);
+  const delayedOrdersList = allRecords.filter(r => r.details?.isDelayed === true);
 
   const totalOrderPeriodDays = btcdRepaidOrdersList.reduce((sum, r) => sum + (r.details?.orderPeriod ?? 0), 0);
   const avgOrderPeriodDays = btcdRepaidOrdersList.length > 0 ? totalOrderPeriodDays / btcdRepaidOrdersList.length : 0;
@@ -668,6 +678,7 @@ function computeDerivedOrderLists(allRecords: OrderRecord[], nowTimestamp: numbe
     discountOrdersList,
     takenOrdersList,
     btcdRepaidOrdersList,
+    delayedOrdersList,
     avgOrderPeriodDays,
     avgOrderPeriodStr,
     avgOrderPeriodDaysBiggerThan10,
@@ -736,6 +747,7 @@ function buildOrderStats(
     validOrdersList,
     takenOrdersList,
     discountOrdersList,
+    delayedOrdersList,
     avgOrderPeriodDays,
     avgOrderPeriodStr,
     avgOrderPeriodDaysBiggerThan10,
@@ -764,6 +776,7 @@ function buildOrderStats(
     lockedInOrdersBTCD: lockedInOrdersBTCDList.reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0),
     lockedInOrdersBTCDCount: lockedInOrdersBTCDList.length,
     uniqueTokens: [...new Set(allRecords.map(r => r.token))],
+    delayedOrders: delayedOrdersList.length,
     avgOrderPeriodDays,
     avgOrderPeriodStr,
     avgOrderPeriodDaysBiggerThan10,
@@ -1090,6 +1103,7 @@ async function main() {
   // console.log(`出借订单 (Lend): ${stats.lendOrders}`);
   console.log(`累计总抵押 BTC: ${formatWithCommas(stats.totalCollateral, 2)} BTC`);
   console.log(`累计总抵押 BTC (使用Discount): ${formatWithCommas(stats.totalCollateralDiscount, 2)} BTC`);
+  console.log(`延期订单数: ${formatWithCommas(stats.delayedOrders, 0)}`);
   console.log(`累计BTCD铸造总量: ${formatWithCommas(stats.totalTokenAmount, 2)}`);
   console.log(`活跃订单铸造BTCD数量: ${formatWithCommas(stats.activeTokenAmount, 2)}`);
   console.log(`订单铸造BTCD总量（活跃订单 + 已清算订单）: ${formatWithCommas(stats.currentMintedBTCD, 2)}`);
@@ -1170,10 +1184,10 @@ async function main() {
       userStats,
       contractAddress: LOAN_CONTRACT_ADDRESS,
       currentBlock,
-      fetchedDetails: true,
-      records: allRecords,
+      delayedOrders: derived.delayedOrdersList,
       liquidatedOrders: derived.liquidatedOrders,
-      overdueOrders: derived.overdueOrders
+      overdueOrders: derived.overdueOrders,
+      records: allRecords
     }, null, 2));
     console.log(`\n记录已保存到 ${outputFile}`);
     console.log(`本次新增订单: ${formatWithCommas(newRecords.length, 0)} 条`);
