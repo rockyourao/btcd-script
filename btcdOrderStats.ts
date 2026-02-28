@@ -1056,8 +1056,6 @@ async function main() {
   const provider = new (ethers as any).providers.JsonRpcProvider(RPC_URL);
   const outputFile = `data/${network}/btcd_order_stats.json`;
 
-
-
   const { existingRecords, savedCurrentBlock } = loadExistingOrderData(outputFile);
   let beforeBlockRes = beforeBlock;
   if (beforeBlockRes === undefined && savedCurrentBlock > 0) {
@@ -1112,26 +1110,30 @@ async function main() {
   if (overdueRankBorrowerTop10.length > 0) {
     console.log(`\n过期排行 Top10 (EVM 用户 borrower):`);
     overdueRankBorrowerTop10.forEach((item, i) => {
-      console.log(`    ${i + 1}. ${item.address} 过期订单数: ${item.count}`);
+      console.log(`  ${i + 1}. ${item.address} 过期订单数: ${item.count}`);
     });
   }
   if (overdueRankBtcTop10.length > 0) {
     console.log(`\n过期排行 Top10 (BTC 用户 borrowerBtcAddress):`);
     overdueRankBtcTop10.forEach((item, i) => {
-      console.log(`    ${i + 1}. ${item.address} 过期订单数: ${item.count}`);
+      console.log(`  ${i + 1}. ${item.address} 过期订单数: ${item.count}`);
     });
   }
 
   console.log(`\n===== 所有订单质押 BTC 排行 Top10 =====`);
   const collateralRankTop10 = allRecords.sort((a, b) => parseFloat(b.details?.realBtcAmount) - parseFloat(a.details?.realBtcAmount)).slice(0, 10);
   collateralRankTop10.forEach((item, i) => {
-    console.log(`    ${i + 1}. ${item.orderId} 质押BTC: ${formatWithCommas(item.details?.realBtcAmount, 2)} BTC ${formatWithCommas(item.tokenAmount, 2)} BTCD, BTC地址:${item.details?.borrowerBtcAddress} EVM地址:${item.details?.borrower}`);
+    console.log(`  ${i + 1}. 订单ID: ${item.orderId}, 质押BTC: ${formatWithCommas(item.details?.realBtcAmount, 2)} BTC, ${formatWithCommas(item.tokenAmount, 2)} BTCD, BTC地址: ${item.details?.borrowerBtcAddress}
+    订单BTC地址: ${item.details?.lenderBtcAddress} EVM地址: ${item.details?.borrower} ${item.details.statusName}
+    `);
   });
 
   console.log(`\n===== 已借出订单质押 BTC 排行 Top10 =====`);
   const borrowedCollateralRankTop10 = allRecords.filter(r => r.details?.status === OrderStatus.BORROWED).sort((a, b) => parseFloat(b.details?.realBtcAmount) - parseFloat(a.details?.realBtcAmount)).slice(0, 10);
   borrowedCollateralRankTop10.forEach((item, i) => {
-    console.log(`    ${i + 1}. ${item.orderId} 质押BTC: ${formatWithCommas(item.details?.realBtcAmount, 2)} BTC ${formatWithCommas(item.tokenAmount, 2)} BTCD, BTC地址:${item.details?.borrowerBtcAddress} EVM地址:${item.details?.borrower}`);
+    console.log(`  ${i + 1}. 订单ID: ${item.orderId}, 质押BTC: ${formatWithCommas(item.details?.realBtcAmount, 2)} BTC, ${formatWithCommas(item.tokenAmount, 2)} BTCD, BTC地址: ${item.details?.borrowerBtcAddress}
+    订单BTC地址: ${item.details?.lenderBtcAddress} EVM地址: ${item.details?.borrower}
+    `);
   });
 
   console.log(`\n===== 所有订单中 质押 BTC 总和的 BTC 地址排行 Top10 =====`);
@@ -1142,7 +1144,7 @@ async function main() {
     return acc;
   }, new Map<string, number>()).entries()).sort((a, b) => b[1] - a[1]).slice(0, 10);
   collateralRankByBtcAddressTop10.forEach((item, i) => {
-    console.log(`    ${i + 1}. ${item[0]} 质押BTC: ${formatWithCommas(item[1], 2)} BTC`);
+    console.log(`  ${i + 1}. ${item[0]} 质押BTC: ${formatWithCommas(item[1], 2)} BTC`);
   });
 
   console.log(`\n===== 已借出订单中 质押 BTC 总和的 BTC 地址排行 Top10 =====`);
@@ -1153,7 +1155,7 @@ async function main() {
     return acc;
   }, new Map<string, number>()).entries()).sort((a, b) => b[1] - a[1]).slice(0, 10);
   borrowedCollateralRankByBtcAddressTop10.forEach((item, i) => {
-    console.log(`    ${i + 1}. ${item[0]} 质押BTC: ${formatWithCommas(item[1], 2)} BTC`);
+    console.log(`  ${i + 1}. ${item[0]} 质押BTC: ${formatWithCommas(item[1], 2)} BTC`);
   });
 
   console.log(`\n===== 订单统计 =====`);
