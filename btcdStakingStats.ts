@@ -1071,11 +1071,15 @@ async function main() {
   console.log(`  Staked 事件: ${formatWithCommas(stats.stakedEvents, 0)}`);
   console.log(`  Withdrawn 事件: ${formatWithCommas(stats.withdrawnEvents, 0)}`);
   console.log(`  StakeExtended 事件: ${formatWithCommas(stats.extendedEvents, 0)}`);
-  console.log(`\n===== Token Transfer 统计 =====`);
-  console.log(`  总 Transfer 数: ${formatWithCommas(stats.totalTokenTransfers, 0)}`);
-  console.log(`  本次新增 Transfer: ${formatWithCommas(stats.newTokenTransfersCount, 0)}`);
-  console.log(`  TransferIn (转入 Staking): ${formatWithCommas(stats.transferInEvents, 0)}`);
-  console.log(`  TransferOut (转出 Staking): ${formatWithCommas(stats.transferOutEvents, 0)}`);
+
+  if (stats.totalTokenTransfers > 0) {
+    console.log(`\n===== Token Transfer 统计 =====`);
+    console.log(`  总 Transfer 数: ${formatWithCommas(stats.totalTokenTransfers, 0)}`);
+    console.log(`  本次新增 Transfer: ${formatWithCommas(stats.newTokenTransfersCount, 0)}`);
+    console.log(`  TransferIn (转入 Staking): ${formatWithCommas(stats.transferInEvents, 0)}`);
+    console.log(`  TransferOut (转出 Staking): ${formatWithCommas(stats.transferOutEvents, 0)}`);
+  }
+
   console.log(`\n===== 当前已质押总量 =====`);
   console.log(`  Native Token: ${formatWithCommas(stats.totalActiveEth, 8)}`);
   console.log(`  Token1: ${formatWithCommas(stats.totalActiveToken1, 4)}`);

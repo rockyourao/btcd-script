@@ -6,13 +6,13 @@
  * npx ts-node btcdOrderStats.ts --network pgp-prod  # 指定网络
  * npx ts-node btcdOrderStats.ts --limit 50          # 获取最新 50 条
  * npx ts-node btcdOrderStats.ts --orderType 0       # 按订单类型过滤
- * npx ts-node btcdOrderStats.ts --skip-timestamp    # 跳过时间戳获取
- * npx ts-node btcdOrderStats.ts --fetch-details     # 获取订单详细信息
+ * npx ts-node btcdOrderStats.ts --no-update         # 不更新订单，仅用已有数据统计 (默认 true 会更新)
  */
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 const { ethers } = require('ethers');
 const fs = require('fs');
+const path = require('path');
 
 import { formatBtc, formatTimestampDisplay, formatWithCommas, getBlockTimestamps, getUnitStartTimestamp, timestampToStr, topicToAddress } from './util';
 
@@ -523,6 +523,7 @@ interface MainArgs {
   fetchAll: boolean;
   skipTimestamp: boolean;
   fetchDetails: boolean;
+  update: boolean;
 }
 
 function parseMainArgs(args: string[]): MainArgs {
@@ -532,6 +533,7 @@ function parseMainArgs(args: string[]): MainArgs {
   let fetchAll = true;
   let skipTimestamp = true;
   let fetchDetails = false;
+  let update = true;
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--network' && args[i + 1]) {
       i++;
@@ -547,9 +549,11 @@ function parseMainArgs(args: string[]): MainArgs {
       i++;
     } else if (args[i] === '--fetch-details') {
       fetchDetails = true;
+    } else if (args[i] === '--no-update') {
+      update = false;
     }
   }
-  return { orderType, limit, beforeBlock, fetchAll, skipTimestamp, fetchDetails };
+  return { orderType, limit, beforeBlock, fetchAll, skipTimestamp, fetchDetails, update };
 }
 
 function loadExistingOrderData(outputFile: string): { existingRecords: OrderRecord[]; savedCurrentBlock: number } {
@@ -1027,33 +1031,32 @@ function printUserStats(us: ReturnType<typeof computeUserStats>): void {
     console.log(`  ${day.date}: 新增用户数=${day.count}`);
   });
   console.log(`\n===== 每周新增用户 (共 ${us.weeklyNewUsersArray.length} 周) =====`);
-  us.weeklyNewUsersArray.slice().reverse().forEach(week => {
+  us.weeklyNewUsersArray.slice(-5).reverse().forEach(week => {
     console.log(`  ${week.date}: 新增用户数=${week.count}`);
   });
-  console.log(`\n===== 用户 Take 订单数排行榜 (Top 20) =====`);
-  us.userOrderRanking.slice(0, 20).forEach((item, index) => {
+  console.log(`\n===== 用户 Take 订单数排行榜 (Top 10) =====`);
+  us.userOrderRanking.slice(0, 10).forEach((item, index) => {
     console.log(`  ${(index + 1).toString().padStart(2, ' ')}. ${item.user}: ${formatWithCommas(item.count, 0)} 单`);
   });
   console.log(`\n===== BTC用户总数 =====`);
   console.log(`BTC用户总数: ${formatWithCommas(us.totalBTCUsers, 0)}`);
-  console.log(`\n===== BTC用户 Take 订单数排行榜 (Top 20) =====`);
-  us.btcuserOrderRanking.slice(0, 20).forEach((item, index) => {
+  console.log(`\n===== BTC用户 Take 订单数排行榜 (Top 10) =====`);
+  us.btcuserOrderRanking.slice(0, 10).forEach((item, index) => {
     console.log(`  ${(index + 1).toString().padStart(2, ' ')}. ${item.user}: ${formatWithCommas(item.count, 0)} 单`);
   });
 }
 
 async function main() {
   const args = process.argv.slice(2);
-  const { orderType, limit, beforeBlock, fetchAll, skipTimestamp, fetchDetails } = parseMainArgs(args);
+  const { orderType, limit, beforeBlock, fetchAll, skipTimestamp, update } = parseMainArgs(args);
 
   const startTime = Date.now();
-  console.log(`\n===== 获取 OrderCreated 事件 [网络: ${network}] =====`);
+  console.log(`\n===== [网络: ${network}] =====`);
 
   const provider = new (ethers as any).providers.JsonRpcProvider(RPC_URL);
   const outputFile = `data/${network}/btcd_order_stats.json`;
 
-  const currentBlock: number = await provider.getBlockNumber();
-  console.log(`当前区块高度: ${currentBlock}`);
+
 
   const { existingRecords, savedCurrentBlock } = loadExistingOrderData(outputFile);
   let beforeBlockRes = beforeBlock;
@@ -1061,18 +1064,36 @@ async function main() {
     beforeBlockRes = savedCurrentBlock;
   }
 
-  console.log(`\n获取从区块 ${beforeBlockRes ? beforeBlockRes + 1 : INITIAL_START_BLOCK} 到 ${currentBlock} 的新订单...`);
-  const { records: newRecords } = await getOrderCreatedLogs(provider, currentBlock, {
-    orderType,
-    limit,
-    beforeBlock: beforeBlockRes,
-    fetchAll,
-    skipTimestamp,
-    fetchDetails: true
-  });
-  console.log(`\n找到 ${newRecords.length} 条新订单`);
+  let currentBlock: number = beforeBlockRes;
 
-  const { allRecords, updatedDetailsMap } = await updateDetailsAndMergeRecords(provider, existingRecords, newRecords);
+  let newRecords: OrderRecord[] = [];
+  let allRecords: OrderRecord[];
+  let updatedDetailsMap: Map<string, OrderDetails>;
+
+  if (update) {
+    console.log(`\n获取 OrderCreated 事件`);
+    currentBlock = await provider.getBlockNumber();
+    console.log(`当前区块高度: ${currentBlock}`);
+
+    console.log(`\n获取从区块 ${beforeBlockRes ? beforeBlockRes + 1 : INITIAL_START_BLOCK} 到 ${currentBlock} 的新订单...`);
+    const result = await getOrderCreatedLogs(provider, currentBlock, {
+      orderType,
+      limit,
+      beforeBlock: beforeBlockRes,
+      fetchAll,
+      skipTimestamp,
+      fetchDetails: true
+    });
+    newRecords = result.records;
+    console.log(`\n找到 ${newRecords.length} 条新订单`);
+    const mergeResult = await updateDetailsAndMergeRecords(provider, existingRecords, newRecords);
+    allRecords = mergeResult.allRecords;
+    updatedDetailsMap = mergeResult.updatedDetailsMap;
+  } else {
+    console.log(`\n跳过更新，使用已有数据 (--no-update)`);
+    allRecords = existingRecords;
+    updatedDetailsMap = new Map<string, OrderDetails>();
+  }
 
   const nowTimestamp = Math.floor(Date.now() / 1000);
   const derived = computeDerivedOrderLists(allRecords, nowTimestamp);
@@ -1086,14 +1107,63 @@ async function main() {
   printTimeSeriesStats(timeSeries);
   printUserStats(userStatsData);
 
+  const overdueRankBorrowerTop10 = overdueRanks.overdueRankByBorrower.slice(0, 10);
+  const overdueRankBtcTop10 = overdueRanks.overdueRankByBorrowerBtcAddress.slice(0, 10);
+  if (overdueRankBorrowerTop10.length > 0) {
+    console.log(`\n过期排行 Top10 (EVM 用户 borrower):`);
+    overdueRankBorrowerTop10.forEach((item, i) => {
+      console.log(`    ${i + 1}. ${item.address} 过期订单数: ${item.count}`);
+    });
+  }
+  if (overdueRankBtcTop10.length > 0) {
+    console.log(`\n过期排行 Top10 (BTC 用户 borrowerBtcAddress):`);
+    overdueRankBtcTop10.forEach((item, i) => {
+      console.log(`    ${i + 1}. ${item.address} 过期订单数: ${item.count}`);
+    });
+  }
+
+  console.log(`\n===== 所有订单质押 BTC 排行 Top10 =====`);
+  const collateralRankTop10 = allRecords.sort((a, b) => parseFloat(b.details?.realBtcAmount) - parseFloat(a.details?.realBtcAmount)).slice(0, 10);
+  collateralRankTop10.forEach((item, i) => {
+    console.log(`    ${i + 1}. ${item.orderId} 质押BTC: ${formatWithCommas(item.details?.realBtcAmount, 2)} BTC ${formatWithCommas(item.tokenAmount, 2)} BTCD, BTC地址:${item.details?.borrowerBtcAddress} EVM地址:${item.details?.borrower}`);
+  });
+
+  console.log(`\n===== 已借出订单质押 BTC 排行 Top10 =====`);
+  const borrowedCollateralRankTop10 = allRecords.filter(r => r.details?.status === OrderStatus.BORROWED).sort((a, b) => parseFloat(b.details?.realBtcAmount) - parseFloat(a.details?.realBtcAmount)).slice(0, 10);
+  borrowedCollateralRankTop10.forEach((item, i) => {
+    console.log(`    ${i + 1}. ${item.orderId} 质押BTC: ${formatWithCommas(item.details?.realBtcAmount, 2)} BTC ${formatWithCommas(item.tokenAmount, 2)} BTCD, BTC地址:${item.details?.borrowerBtcAddress} EVM地址:${item.details?.borrower}`);
+  });
+
+  console.log(`\n===== 所有订单中 质押 BTC 总和的 BTC 地址排行 Top10 =====`);
+  const collateralRankByBtcAddressTop10 = Array.from(allRecords.reduce((acc, r) => {
+    if (r.details?.borrowerBtcAddress) {
+      acc.set(r.details?.borrowerBtcAddress, (acc.get(r.details?.borrowerBtcAddress) || 0) + parseFloat(r.details?.realBtcAmount));
+    }
+    return acc;
+  }, new Map<string, number>()).entries()).sort((a, b) => b[1] - a[1]).slice(0, 10);
+  collateralRankByBtcAddressTop10.forEach((item, i) => {
+    console.log(`    ${i + 1}. ${item[0]} 质押BTC: ${formatWithCommas(item[1], 2)} BTC`);
+  });
+
+  console.log(`\n===== 已借出订单中 质押 BTC 总和的 BTC 地址排行 Top10 =====`);
+  const borrowedCollateralRankByBtcAddressTop10 = Array.from(allRecords.filter(r => r.details?.status === OrderStatus.BORROWED).reduce((acc, r) => {
+    if (r.details?.borrowerBtcAddress) {
+      acc.set(r.details?.borrowerBtcAddress, (acc.get(r.details?.borrowerBtcAddress) || 0) + parseFloat(r.details?.realBtcAmount));
+    }
+    return acc;
+  }, new Map<string, number>()).entries()).sort((a, b) => b[1] - a[1]).slice(0, 10);
+  borrowedCollateralRankByBtcAddressTop10.forEach((item, i) => {
+    console.log(`    ${i + 1}. ${item[0]} 质押BTC: ${formatWithCommas(item[1], 2)} BTC`);
+  });
+
   console.log(`\n===== 订单统计 =====`);
   console.log(`总订单数: ${formatWithCommas(stats.totalOrders, 0)}`);
-  const validOrdersPercent = stats.totalOrders > 0 ? ((stats.validOrders / stats.totalOrders) * 100).toFixed(2) : '0.00';
-  console.log(`有效订单数: ${formatWithCommas(stats.validOrders, 0)} (${validOrdersPercent}%)`);
   const takenOrdersPercent = stats.totalOrders > 0 ? ((stats.takenOrders / stats.totalOrders) * 100).toFixed(2) : '0.00';
   console.log(`已接单订单数: ${formatWithCommas(stats.takenOrders, 0)} (${takenOrdersPercent}%)`);
+  const validOrdersPercent = stats.totalOrders > 0 ? ((stats.validOrders / stats.totalOrders) * 100).toFixed(2) : '0.00';
+  console.log(`有效订单数: ${formatWithCommas(stats.validOrders, 0)} (${validOrdersPercent}%)`);
   const discountOrdersPercent = stats.validOrders > 0 ? ((stats.discountOrders / stats.validOrders) * 100).toFixed(2) : '0.00';
-  console.log(`使用Discount订单数: ${formatWithCommas(stats.discountOrders, 0)} (${discountOrdersPercent}%)`);
+  console.log(`有效订单中 使用Discount订单数: ${formatWithCommas(stats.discountOrders, 0)} (${discountOrdersPercent}%)`);
   console.log(`有效订单中 limitedDays 为 180 天的订单数量: ${formatWithCommas(stats.limitedDays180Count, 0)}`);
   if (stats.limitedDays180AfterStart != null) {
     const s = stats.limitedDays180AfterStart;
@@ -1138,21 +1208,6 @@ async function main() {
   console.log(`  抵押 BTC: ${formatWithCommas(stats.overdueStats.collateral, 8)} BTC`);
   console.log(`  BTCD数量: ${formatWithCommas(stats.overdueStats.tokenAmount, 2)}`);
 
-  const overdueRankBorrowerTop10 = overdueRanks.overdueRankByBorrower.slice(0, 10);
-  const overdueRankBtcTop10 = overdueRanks.overdueRankByBorrowerBtcAddress.slice(0, 10);
-  if (overdueRankBorrowerTop10.length > 0) {
-    console.log(`\n过期排行 Top10 (EVM 用户 borrower):`);
-    overdueRankBorrowerTop10.forEach((item, i) => {
-      console.log(`    ${i + 1}. ${item.address} 过期订单数: ${item.count}`);
-    });
-  }
-  if (overdueRankBtcTop10.length > 0) {
-    console.log(`\n过期排行 Top10 (BTC 用户 borrowerBtcAddress):`);
-    overdueRankBtcTop10.forEach((item, i) => {
-      console.log(`    ${i + 1}. ${item.address} 过期订单数: ${item.count}`);
-    });
-  }
-
   // 显示状态统计
   console.log(`\n===== 订单状态分布 =====`);
   console.log(`  CREATED (已创建): ${formatWithCommas(stats.statusStats.created, 0)}`);
@@ -1175,21 +1230,27 @@ async function main() {
     const userStats = {
       totalUsers: userStatsData.totalUsers,
       totalUserOrders: userStatsData.userOrders.length,
-      userOrderRanking: userStatsData.userOrderRanking.slice(0, 10)
+      userOrderRanking: userStatsData.userOrderRanking.slice(0, 10),
+      totalBTCUsers: userStatsData.totalBTCUsers,
+      btcuserOrderRanking: userStatsData.btcuserOrderRanking.slice(0, 10)
     };
 
     // 保存到文件
     fs.writeFileSync(outputFile, JSON.stringify({
       stats,
-      userStats,
       contractAddress: LOAN_CONTRACT_ADDRESS,
       currentBlock,
-      delayedOrders: derived.delayedOrdersList,
-      liquidatedOrders: derived.liquidatedOrders,
-      overdueOrders: derived.overdueOrders,
       records: allRecords
     }, null, 2));
     console.log(`\n记录已保存到 ${outputFile}`);
+
+    // 分别保存 userStats、delayedOrders、liquidatedOrders、overdueOrders 到同目录下的独立 json 文件
+    const outputDir = path.dirname(outputFile);
+    fs.writeFileSync(path.join(outputDir, 'user_stats.json'), JSON.stringify(userStats, null, 2));
+    fs.writeFileSync(path.join(outputDir, 'delayed_orders.json'), JSON.stringify(derived.delayedOrdersList, null, 2));
+    fs.writeFileSync(path.join(outputDir, 'liquidated_orders.json'), JSON.stringify(derived.liquidatedOrders, null, 2));
+    fs.writeFileSync(path.join(outputDir, 'overdue_orders.json'), JSON.stringify(derived.overdueOrders, null, 2));
+
     console.log(`本次新增订单: ${formatWithCommas(newRecords.length, 0)} 条`);
     console.log(`本次更新状态: ${formatWithCommas(updatedDetailsMap.size, 0)} 条`);
   }
