@@ -341,7 +341,7 @@ async function fetchOrderDetailsWithMulticall(
             isDelayed
           });
         } catch (decodeError) {
-          console.error(`解码订单 ${orderId} 详情失败:`, decodeError);
+          console.error(`❌解码订单 ${orderId} 详情失败:`, decodeError);
         }
       }
 
@@ -352,7 +352,7 @@ async function fetchOrderDetailsWithMulticall(
     }
   }
 
-  console.log(`成功获取 ${orderDetailsMap.size} 个订单的详细信息`);
+  console.log(`✅成功获取 ${orderDetailsMap.size} 个订单的详细信息`);
   return orderDetailsMap;
 }
 
@@ -423,7 +423,7 @@ async function getOrderCreatedLogs(
 
   console.log(`\n合约地址: ${LOAN_CONTRACT_ADDRESS}`);
   console.log(`事件签名: ${ORDER_CREATED_TOPIC}`);
-  console.log(`从区块 ${startBlock} 到 ${endBlock} 搜索...`);
+  console.log(`🔍从区块 ${startBlock} 到 ${endBlock} 搜索...`);
 
   if (orderType !== undefined) {
     console.log(`过滤订单类型: ${orderType} (${orderType === 0 ? 'Borrow' : 'Lend'})`);
@@ -472,13 +472,13 @@ async function getOrderCreatedLogs(
             console.log(`区块 ${subFrom} - ${subTo}: 找到 ${logs.length} 条 (累计: ${allLogs.length})`);
           }
         } catch (subError) {
-          console.error(`查询区块 ${subFrom} - ${subTo} 失败:`, subError);
+          console.error(`❌查询区块 ${subFrom} - ${subTo} 失败:`, subError);
         }
       }
     }
   }
 
-  console.log(`\n总共获取到 ${allLogs.length} 条 OrderCreated 事件日志`);
+  console.log(`\n✅总共获取到 ${allLogs.length} 条 OrderCreated 事件日志`);
 
   if (allLogs.length === 0) {
     return { records: [] };
@@ -629,8 +629,11 @@ interface DerivedOrderLists {
   avgOrderPeriodStr: string;
   avgOrderPeriodDaysBiggerThan10: number;
   avgOrderPeriodStrBiggerThan10: string;
+  avgOrderPeriodDaysBiggerThanxxx: number;
+  avgOrderPeriodStrBiggerThanxxx: string;
   avgValidOrderActualDurationDays: number;
   avgValidOrderActualDurationStr: string;
+  btcdRepaidOrdersPeriodLessThan1DayCount: number;
 }
 
 function computeDerivedOrderLists(allRecords: OrderRecord[], nowTimestamp: number): DerivedOrderLists {
@@ -667,10 +670,19 @@ function computeDerivedOrderLists(allRecords: OrderRecord[], nowTimestamp: numbe
   const avgOrderPeriodDaysBiggerThan10 = btcdRepaidOrdersAmountBiggerThan10List.length > 0 ? totalOrderPeriodDaysBiggerThan10 / btcdRepaidOrdersAmountBiggerThan10List.length : 0;
   const avgOrderPeriodStrBiggerThan10 = `${avgOrderPeriodDaysBiggerThan10.toFixed(2)}天`;
 
+  const tokenAmountThreshold = 1000;
+  const btcdRepaidOrdersAmountBiggerThanxxxList = btcdRepaidOrdersList.filter(r => parseFloat(r.tokenAmount) > tokenAmountThreshold && r.details?.limitedDays >= 90);
+  const totalOrderPeriodDaysBiggerThanxxx = btcdRepaidOrdersAmountBiggerThanxxxList.reduce((sum, r) => sum + (r.details?.orderPeriod ?? 0), 0);
+  const avgOrderPeriodDaysBiggerThanxxx = btcdRepaidOrdersAmountBiggerThanxxxList.length > 0 ? totalOrderPeriodDaysBiggerThanxxx / btcdRepaidOrdersAmountBiggerThanxxxList.length : 0;
+  const avgOrderPeriodStrBiggerThanxxx = `${avgOrderPeriodDaysBiggerThanxxx.toFixed(2)}天`;
+
   const btcdValidOrdersAmountBiggerThan10List = validOrdersList.filter(r => parseFloat(r.tokenAmount) > 10 && r.details?.limitedDays >= 90);
   const totalValidOrderActualDurationDays = btcdValidOrdersAmountBiggerThan10List.reduce((sum, r) => sum + (r.details?.orderActualDuration ?? 0), 0);
   const avgValidOrderActualDurationDays = btcdValidOrdersAmountBiggerThan10List.length > 0 ? totalValidOrderActualDurationDays / btcdValidOrdersAmountBiggerThan10List.length : 0;
   const avgValidOrderActualDurationStr = `${avgValidOrderActualDurationDays.toFixed(2)}天`;
+
+  const btcdRepaidOrdersPeriodLessThan1DayList = btcdRepaidOrdersList.filter(r => r.details?.orderPeriod < 1 && r.details?.limitedDays >= 90);
+  const btcdRepaidOrdersPeriodLessThan1DayCount = btcdRepaidOrdersPeriodLessThan1DayList.length;
 
   return {
     borrowedOrders,
@@ -687,8 +699,11 @@ function computeDerivedOrderLists(allRecords: OrderRecord[], nowTimestamp: numbe
     avgOrderPeriodStr,
     avgOrderPeriodDaysBiggerThan10,
     avgOrderPeriodStrBiggerThan10,
+    avgOrderPeriodDaysBiggerThanxxx,
+    avgOrderPeriodStrBiggerThanxxx,
     avgValidOrderActualDurationDays,
-    avgValidOrderActualDurationStr
+    avgValidOrderActualDurationStr,
+    btcdRepaidOrdersPeriodLessThan1DayCount
   };
 }
 
@@ -756,8 +771,11 @@ function buildOrderStats(
     avgOrderPeriodStr,
     avgOrderPeriodDaysBiggerThan10,
     avgOrderPeriodStrBiggerThan10,
+    avgOrderPeriodDaysBiggerThanxxx,
+    avgOrderPeriodStrBiggerThanxxx,
     avgValidOrderActualDurationDays,
-    avgValidOrderActualDurationStr
+    avgValidOrderActualDurationStr,
+    btcdRepaidOrdersPeriodLessThan1DayCount
   } = derived;
 
   const lockedInOrdersBTCDList = allRecords.filter(r => r.details?.status !== OrderStatus.BORROWED && r.details?.status !== OrderStatus.CLOSED);
@@ -785,8 +803,11 @@ function buildOrderStats(
     avgOrderPeriodStr,
     avgOrderPeriodDaysBiggerThan10,
     avgOrderPeriodStrBiggerThan10,
+    avgOrderPeriodDaysBiggerThanxxx,
+    avgOrderPeriodStrBiggerThanxxx,
     avgValidOrderActualDurationDays,
     avgValidOrderActualDurationStr,
+    btcdRepaidOrdersPeriodLessThan1DayCount,
     firstOrderBlock: allRecords.length > 0 ? allRecords[0].blockNumber : null,
     lastOrderBlock: allRecords.length > 0 ? allRecords[allRecords.length - 1].blockNumber : null,
     firstOrderTime: allRecords.length > 0 ? allRecords[0].timestampStr : null,
@@ -1083,7 +1104,7 @@ async function main() {
       fetchDetails: true
     });
     newRecords = result.records;
-    console.log(`\n找到 ${newRecords.length} 条新订单`);
+
     const mergeResult = await updateDetailsAndMergeRecords(provider, existingRecords, newRecords);
     allRecords = mergeResult.allRecords;
     updatedDetailsMap = mergeResult.updatedDetailsMap;
@@ -1182,8 +1203,10 @@ async function main() {
   console.log(`锁定在订单中的BTCD总量: ${formatWithCommas(stats.lockedInOrdersBTCD, 2)}, 订单数量: ${stats.lockedInOrdersBTCDCount}`);
   console.log(`已还款订单的平均实际时长: ${stats.avgOrderPeriodStr}`);
   console.log(`已还款订单的平均实际时长 (大于10 BTCD): ${stats.avgOrderPeriodStrBiggerThan10}`);
+  console.log(`已还款订单的平均实际时长 (大于1000 BTCD): ${stats.avgOrderPeriodStrBiggerThanxxx}`);
   console.log(`所有订单的平均实际时长: ${stats.avgValidOrderActualDurationStr}`);
 
+  console.log(`已还款订单的实际时长小于1天的订单数量: ${stats.btcdRepaidOrdersPeriodLessThan1DayCount}`);
 
   if (stats.firstOrderTime) {
     console.log(`\n时间范围:`);
@@ -1244,14 +1267,15 @@ async function main() {
       currentBlock,
       records: allRecords
     }, null, 2));
-    console.log(`\n记录已保存到 ${outputFile}`);
+    console.log(`\n✅记录已保存到 ${outputFile}`);
 
     // 分别保存 userStats、delayedOrders、liquidatedOrders、overdueOrders 到同目录下的独立 json 文件
+    // delayedOrders、liquidatedOrders、overdueOrders按已质押的BTC倒序
     const outputDir = path.dirname(outputFile);
     fs.writeFileSync(path.join(outputDir, 'user_stats.json'), JSON.stringify(userStats, null, 2));
-    fs.writeFileSync(path.join(outputDir, 'delayed_orders.json'), JSON.stringify(derived.delayedOrdersList, null, 2));
-    fs.writeFileSync(path.join(outputDir, 'liquidated_orders.json'), JSON.stringify(derived.liquidatedOrders, null, 2));
-    fs.writeFileSync(path.join(outputDir, 'overdue_orders.json'), JSON.stringify(derived.overdueOrders, null, 2));
+    fs.writeFileSync(path.join(outputDir, 'delayed_orders.json'), JSON.stringify(derived.delayedOrdersList.sort((a, b) => parseFloat(b.details?.realBtcAmount) - parseFloat(a.details?.realBtcAmount)), null, 2));
+    fs.writeFileSync(path.join(outputDir, 'liquidated_orders.json'), JSON.stringify(derived.liquidatedOrders.sort((a, b) => parseFloat(b.details?.realBtcAmount) - parseFloat(a.details?.realBtcAmount)), null, 2));
+    fs.writeFileSync(path.join(outputDir, 'overdue_orders.json'), JSON.stringify(derived.overdueOrders.sort((a, b) => parseFloat(b.details?.realBtcAmount) - parseFloat(a.details?.realBtcAmount)), null, 2));
 
     console.log(`本次新增订单: ${formatWithCommas(newRecords.length, 0)} 条`);
     console.log(`本次更新状态: ${formatWithCommas(updatedDetailsMap.size, 0)} 条`);
@@ -1261,7 +1285,7 @@ async function main() {
   const endTime = Date.now();
   const duration = (endTime - startTime) / 1000;
   console.log(`\n===== 脚本执行完成 =====`);
-  console.log(`总耗时: ${duration.toFixed(2)} 秒`);
+  console.log(`✨总耗时: ${duration.toFixed(2)} 秒`);
 }
 
 main().catch(console.error);
