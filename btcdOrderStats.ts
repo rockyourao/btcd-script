@@ -1206,7 +1206,7 @@ async function main() {
   console.log(`已还款订单的平均实际时长 (大于1000 BTCD): ${stats.avgOrderPeriodStrBiggerThanxxx}`);
   console.log(`所有订单的平均实际时长: ${stats.avgValidOrderActualDurationStr}`);
 
-  console.log(`已还款订单的实际时长小于1天的订单数量: ${stats.btcdRepaidOrdersPeriodLessThan1DayCount}`);
+  console.log(`已还款订单中实际时长小于1天的订单数量: ${stats.btcdRepaidOrdersPeriodLessThan1DayCount}`);
 
   if (stats.firstOrderTime) {
     console.log(`\n时间范围:`);
