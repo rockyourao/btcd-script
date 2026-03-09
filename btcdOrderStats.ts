@@ -48,6 +48,11 @@ const multicall3Abi = require('./abi/Multicall3.json').abi;
 // event OrderCreated(address indexed orderId, OrderType indexed orderType, uint256 collateral, address token, uint256 tokenAmount)
 const ORDER_CREATED_TOPIC = ethers.utils.id('OrderCreated(address,uint8,uint256,address,uint256)');
 
+// OrderClosed 事件签名
+// event OrderClosed(address indexed orderId);
+const ORDER_CLOSED_TOPIC = ethers.utils.id('OrderClosed()');
+
+
 // OrderDelayed 事件签名
 // event OrderDelayed(bytes32 indexed newBtcTxId);
 const ORDER_DELAYED_TOPIC = ethers.utils.id('OrderDelayed(bytes32)');
@@ -132,8 +137,13 @@ interface OrderDetails {
   orderActualDurationStr: string; // 订单实际时长字符串，如 "12.31天"
   realBtcAmount: string;        // toLenderBtcTx.amount (BTC)
   realBtcAmountRaw: string;     // 原始值 (satoshi)
+  proofTimestamp: number;      // toLenderBtcTx.proofTimestamp
+  proofTimestampStr: string;    // proofTimestamp 字符串
   useDiscount: boolean;         // collateral == toLenderBtcTx.amount
   isDelayed: boolean;           // 是否已延迟
+  closeTime?: number;           // 订单关闭时间（从 OrderClosed 事件获取）
+  closeTimeStr?: string;       // 订单关闭时间字符串
+  closeTxId?: string;          // 订单关闭对应的交易 ID
 }
 
 interface QueryOptions {
@@ -268,14 +278,16 @@ async function fetchOrderDetailsWithMulticall(
             };
           }
 
-          // 解码 toLenderBtcTx 获取 realBtcAmount
+          // 解码 toLenderBtcTx 获取 realBtcAmount、proofTimestamp
           let realBtcAmountRaw = '0';
           let realBtcAmount = '0';
+          let proofTimestamp = 0;
           if (toLenderBtcTxResult.success) {
             try {
               const decoded = orderInterface.decodeFunctionResult('toLenderBtcTx', toLenderBtcTxResult.returnData);
               realBtcAmountRaw = decoded.amount.toString();
               realBtcAmount = formatBtc(decoded.amount);
+              proofTimestamp = decoded.proofTimestamp?.toNumber?.() ?? 0;
             } catch {
               // 解码失败，保持默认值
             }
@@ -337,6 +349,8 @@ async function fetchOrderDetailsWithMulticall(
             orderActualDurationStr,
             realBtcAmount,
             realBtcAmountRaw,
+            proofTimestamp,
+            proofTimestampStr: timestampToStr(proofTimestamp),
             useDiscount,
             isDelayed
           });
@@ -354,6 +368,105 @@ async function fetchOrderDetailsWithMulticall(
 
   console.log(`✅成功获取 ${orderDetailsMap.size} 个订单的详细信息`);
   return orderDetailsMap;
+}
+
+/** OrderClosed 事件返回的关闭信息 */
+interface OrderClosedInfo {
+  closeTime: number;
+  closeTimeStr: string;
+  closeTxId: string;
+}
+
+/**
+ * 通过 ORDER_CLOSED_TOPIC 获取订单关闭时间和对应交易 ID
+ * OrderClosed 事件从订单合约地址发出，log.address 为 orderId
+ * 按区块范围分批查询（ethers v5 不支持 address 数组）
+ */
+async function fetchOrderClosedEvents(
+  provider: any,
+  orderIds: string[],
+  startBlock: number,
+  endBlock: number
+): Promise<Map<string, OrderClosedInfo>> {
+  const resultMap = new Map<string, OrderClosedInfo>();
+  if (orderIds.length === 0) return resultMap;
+
+  const orderIdSet = new Set(orderIds.map(id => ethers.utils.getAddress(id).toLowerCase()));
+  console.log(`\n获取 ${orderIdSet.size} 个订单的 OrderClosed 事件 (区块 ${startBlock} - ${endBlock})...`);
+  const allLogs: any[] = [];
+
+  for (let fromBlock = startBlock; fromBlock <= endBlock; fromBlock += BATCH_SIZE) {
+    const toBlock = Math.min(fromBlock + BATCH_SIZE - 1, endBlock);
+    try {
+      const logs = await provider.getLogs({
+        topics: [ORDER_CLOSED_TOPIC],
+        fromBlock,
+        toBlock
+      });
+      for (const log of logs) {
+        const addr = (log.address || '').toLowerCase();
+        if (orderIdSet.has(addr)) {
+          allLogs.push(log);
+        }
+      }
+    } catch (error) {
+      console.error(`获取 OrderClosed 事件区块 ${fromBlock}-${toBlock} 失败:`, error);
+    }
+  }
+
+  if (allLogs.length === 0) return resultMap;
+
+  const blockNumbers = [...new Set(allLogs.map((log: any) => log.blockNumber))] as number[];
+  const blockTimestamps = await getBlockTimestamps(blockNumbers, RPC_URL);
+
+  for (const log of allLogs) {
+    const orderId = ethers.utils.getAddress(log.address);
+    const orderIdLower = orderId.toLowerCase();
+    if (resultMap.has(orderIdLower)) continue; // 每个订单只取第一条（理论上每个订单只会被 close 一次）
+    const timestamp = blockTimestamps.get(log.blockNumber) || 0;
+    resultMap.set(orderIdLower, {
+      closeTime: timestamp,
+      closeTimeStr: timestampToStr(timestamp),
+      closeTxId: log.transactionHash
+    });
+  }
+
+  return resultMap;
+}
+
+/**
+ * 将 OrderClosed 事件数据合并到 OrderDetails（用于 detailsMap）
+ */
+function mergeOrderClosedIntoDetails(
+  detailsMap: Map<string, OrderDetails>,
+  closeInfoMap: Map<string, OrderClosedInfo>
+): void {
+  for (const [orderIdLower, details] of detailsMap) {
+    const closeInfo = closeInfoMap.get(orderIdLower);
+    if (closeInfo) {
+      details.closeTime = closeInfo.closeTime;
+      details.closeTimeStr = closeInfo.closeTimeStr;
+      details.closeTxId = closeInfo.closeTxId;
+    }
+  }
+}
+
+/**
+ * 将 OrderClosed 事件数据合并到 OrderRecord 的 details
+ */
+function mergeOrderClosedIntoRecords(
+  records: OrderRecord[],
+  closeInfoMap: Map<string, OrderClosedInfo>
+): void {
+  for (const record of records) {
+    if (!record.details) continue;
+    const closeInfo = closeInfoMap.get(record.orderId.toLowerCase());
+    if (closeInfo) {
+      record.details.closeTime = closeInfo.closeTime;
+      record.details.closeTimeStr = closeInfo.closeTimeStr;
+      record.details.closeTxId = closeInfo.closeTxId;
+    }
+  }
 }
 
 /**
@@ -505,6 +618,7 @@ async function getOrderCreatedLogs(
     const collateralByOrderId = new Map(records.map(r => [r.orderId.toLowerCase(), r.collateralRaw]));
     const detailsMap = await fetchOrderDetailsWithMulticall(provider, orderIds, collateralByOrderId);
 
+    // OrderClosed 事件在 updateDetailsAndMergeRecords 中统一获取，避免重复调用
     records = records.map(record => ({
       ...record,
       details: detailsMap.get(record.orderId.toLowerCase())
@@ -581,7 +695,9 @@ function loadExistingOrderData(outputFile: string): { existingRecords: OrderReco
 async function updateDetailsAndMergeRecords(
   provider: any,
   existingRecords: OrderRecord[],
-  newRecords: OrderRecord[]
+  newRecords: OrderRecord[],
+  currentBlock: number,
+  startBlock: number
 ): Promise<{ allRecords: OrderRecord[]; updatedDetailsMap: Map<string, OrderDetails> }> {
   const nonClosedOrders = existingRecords.filter(r => r.details?.status !== OrderStatus.CLOSED);
   console.log(`\n需要更新状态的订单 (非 Closed/Cancelled): ${nonClosedOrders.length} 条`);
@@ -610,6 +726,15 @@ async function updateDetailsAndMergeRecords(
 
   const allRecords = Array.from(existingRecordsMap.values());
   allRecords.sort((a, b) => a.blockNumber - b.blockNumber);
+
+  // 通过 ORDER_CLOSED_TOPIC 获取所有订单的关闭时间和交易 ID，合并到 OrderDetails（增量：仅从 startBlock 开始）
+  const allOrderIds = allRecords.map(r => r.orderId);
+  const closeInfoMap = await fetchOrderClosedEvents(provider, allOrderIds, startBlock, currentBlock);
+  if (closeInfoMap.size > 0) {
+    console.log(`✅获取到 ${closeInfoMap.size} 个订单的 OrderClosed 事件`);
+    mergeOrderClosedIntoRecords(allRecords, closeInfoMap);
+  }
+
   return { allRecords, updatedDetailsMap };
 }
 
@@ -1105,7 +1230,8 @@ async function main() {
     });
     newRecords = result.records;
 
-    const mergeResult = await updateDetailsAndMergeRecords(provider, existingRecords, newRecords);
+    const startBlockForClose = beforeBlockRes ?? INITIAL_START_BLOCK;
+    const mergeResult = await updateDetailsAndMergeRecords(provider, existingRecords, newRecords, currentBlock, startBlockForClose);
     allRecords = mergeResult.allRecords;
     updatedDetailsMap = mergeResult.updatedDetailsMap;
   } else {
@@ -1179,6 +1305,18 @@ async function main() {
     console.log(`  ${i + 1}. ${item[0]} 质押BTC: ${formatWithCommas(item[1], 2)} BTC`);
   });
 
+    // 列出所有过期订单中，关闭时间小于订单的proofTimestamp+limitedDays*86400的订单
+  // TODO:实际应该是质押btc交易时间+loktime1，为了简化，这里暂时使用proofTimestamp+limitedDays*86400
+  console.log("\n⚠️  提前关闭的订单ID:")
+  derived.alloverdueOrders.forEach(order => {
+    const proofTimestamp = order.details?.proofTimestamp;
+    const limitedDays = order.details?.limitedDays;
+    const closeTime = order.details?.closeTime;
+    if (closeTime && closeTime < proofTimestamp + limitedDays * 86400) {
+      console.log(` 订单ID: ${order.orderId} BTCD数量: ${formatWithCommas(order.tokenAmount, 2)}`);
+    }
+  });
+
   console.log(`\n===== 订单统计 =====`);
   console.log(`总订单数: ${formatWithCommas(stats.totalOrders, 0)}`);
   const takenOrdersPercent = stats.totalOrders > 0 ? ((stats.takenOrders / stats.totalOrders) * 100).toFixed(2) : '0.00';
@@ -1190,7 +1328,7 @@ async function main() {
   console.log(`有效订单中 limitedDays 为 180 天的订单数量: ${formatWithCommas(stats.limitedDays180Count, 0)}`);
   if (stats.limitedDays180AfterStart != null) {
     const s = stats.limitedDays180AfterStart;
-    console.log(`[180order_start_time] 创建时间 >= 起始时间且已借款订单数: ${formatWithCommas(s.total, 0)}，其中 limitedDays=180: ${formatWithCommas(s.limitedDays180Count, 0)}，占比: ${s.ratioStr}`);
+    console.log(`创建时间 >= 180天订单起始时间且已借款订单数: ${formatWithCommas(s.total, 0)}，其中 订单期限为180天的订单数量: ${formatWithCommas(s.limitedDays180Count, 0)}，占比: ${s.ratioStr}`);
   }
   // console.log(`借款订单 (Borrow): ${stats.borrowOrders}`);
   // console.log(`出借订单 (Lend): ${stats.lendOrders}`);
