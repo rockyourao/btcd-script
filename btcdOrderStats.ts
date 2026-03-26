@@ -150,6 +150,8 @@ interface OrderDetails {
   timeoutRepayerBtcAddress: string; // 超时还款时付款方 BTC 地址
   timeoutRepayTime: number;    // 超时还款时间（链上时间戳，秒）
   timeoutRepayTimeStr: string;
+  interestValue: string;       // 与订单 tokenAmount 同币、同处理：formatEther(interestValue())
+  interestValueRaw: string;   // 与 tokenAmountRaw 一致：链上 uint256 字符串
 }
 
 interface QueryOptions {
@@ -194,7 +196,8 @@ async function fetchOrderDetailsWithMulticall(
     'orderVersion',
     'timeoutRepayer',
     'timeoutRepayerBtcAddress',
-    'timeoutRepayTime'
+    'timeoutRepayTime',
+    'interestValue'
   ];
 
   console.log(`\n使用 Multicall3 获取 ${orderIds.length} 个订单的详细信息...`);
@@ -243,6 +246,7 @@ async function fetchOrderDetailsWithMulticall(
           const timeoutRepayerResult = results[resultIdx++];
           const timeoutRepayerBtcAddressResult = results[resultIdx++];
           const timeoutRepayTimeResult = results[resultIdx++];
+          const interestValueResult = results[resultIdx++];
 
           // 解码各个字段
           const status = statusResult.success
@@ -284,6 +288,13 @@ async function fetchOrderDetailsWithMulticall(
           const timeoutRepayTime = timeoutRepayTimeResult.success
             ? orderInterface.decodeFunctionResult('timeoutRepayTime', timeoutRepayTimeResult.returnData)[0].toNumber()
             : 0;
+          let interestValue = '0';
+          let interestValueRaw = '0';
+          if (interestValueResult.success) {
+            const ivBn = orderInterface.decodeFunctionResult('interestValue', interestValueResult.returnData)[0];
+            interestValueRaw = ivBn.toString();
+            interestValue = ethers.utils.formatEther(ivBn);
+          }
 
           let deadLinesData = {
             orderDeadLine: 0,
@@ -383,7 +394,9 @@ async function fetchOrderDetailsWithMulticall(
             timeoutRepayer,
             timeoutRepayerBtcAddress,
             timeoutRepayTime,
-            timeoutRepayTimeStr: timestampToStr(timeoutRepayTime)
+            timeoutRepayTimeStr: timestampToStr(timeoutRepayTime),
+            interestValue,
+            interestValueRaw
           });
         } catch (decodeError) {
           console.error(`❌解码订单 ${orderId} 详情失败:`, decodeError);
@@ -939,6 +952,7 @@ function buildOrderStats(
     timeoutRepaymentOrders,
     validOrdersList,
     takenOrdersList,
+    btcdRepaidOrdersList,
     discountOrdersList,
     delayedOrdersList,
     avgOrderPeriodDays,
@@ -953,6 +967,8 @@ function buildOrderStats(
   } = derived;
 
   const lockedInOrdersBTCDList = allRecords.filter(r => r.details?.status !== OrderStatus.BORROWED && r.details?.status !== OrderStatus.CLOSED);
+  const totalInterestValue = btcdRepaidOrdersList.reduce((sum, r) => sum + parseFloat(r.details?.interestValue || '0'), 0);
+  const totalOutstandingInterestValue = borrowedOrders.reduce((sum, r) => sum + parseFloat(r.details?.interestValue || '0'), 0);
 
   return {
     totalOrders: allRecords.length,
@@ -961,11 +977,17 @@ function buildOrderStats(
     limitedDays180AfterStart,
     takenOrders: takenOrdersList.length,
     discountOrders: discountOrdersList.length,
-    borrowOrders: allRecords.filter(r => r.orderType === OrderType.Borrow).length,
+    borrowOrders: borrowedOrders.length,
     lendOrders: allRecords.filter(r => r.orderType === OrderType.Lend).length,
     totalCollateral: allRecords.filter(r => r.details?.borrowedTime > 0).reduce((sum, r) => sum + parseFloat(r.details.realBtcAmount), 0),
     totalCollateralDiscount: allRecords.filter(r => r.details?.borrowedTime > 0).reduce((sum, r) => sum + parseFloat(r.collateral), 0),
     totalTokenAmount: allRecords.filter(r => r.details?.borrowedTime > 0).reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0),
+    totalOptionCost:
+      validOrdersList.reduce((sum, r) => sum + parseFloat(r.details?.interestValue || '0'), 0) / 6,
+    totalInterestValue: totalInterestValue,
+    totalInterestToNBW: totalInterestValue * 0.3,
+    totalOutstandingInterestValue: totalOutstandingInterestValue,
+    totalOutstandingInterestToNBW: totalOutstandingInterestValue * 0.3,
     activeTokenAmount: allRecords.filter(r => r.details?.status !== OrderStatus.CLOSED).reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0),
     currentMintedBTCD: allRecords.filter(r => r.details?.status !== OrderStatus.CLOSED).reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0) +
       liquidatedOrders.reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0),
@@ -1403,8 +1425,14 @@ async function main() {
   console.log(`已还款订单的平均实际时长 (大于10 BTCD): ${stats.avgOrderPeriodStrBiggerThan10}`);
   console.log(`已还款订单的平均实际时长 (大于1000 BTCD): ${stats.avgOrderPeriodStrBiggerThanxxx}`);
   console.log(`所有订单的平均实际时长: ${stats.avgValidOrderActualDurationStr}`);
-
   console.log(`已还款订单中实际时长小于1天的订单数量: ${stats.btcdRepaidOrdersPeriodLessThan1DayCount}`);
+
+  console.log(`\n===== 利息总额 =====`);
+  console.log(`已收到的利息总额: ${formatWithCommas(stats.totalInterestValue, 2)}`);
+  console.log(`NBW已收到的利息总额: ${formatWithCommas(stats.totalInterestToNBW, 2)}`);
+  console.log(`待收到的利息总额（未还款订单）: ${formatWithCommas(stats.totalOutstandingInterestValue, 2)}`);
+  console.log(`NBW待收到的利息总额（未还款订单）: ${formatWithCommas(stats.totalOutstandingInterestToNBW, 2)}`);
+  console.log(`期权费用总额: ${formatWithCommas(stats.totalOptionCost, 2)}`);
 
   if (stats.firstOrderTime) {
     console.log(`\n时间范围:`);
