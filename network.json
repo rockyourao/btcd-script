@@ -25,5 +25,18 @@
     "start_block": 13329,
     "batch_size": 50000,
     "180order_start_time": 1769843920
+  },
+  "esc": {
+    "rpc_url": "https://api.elastos.cc/esc",
+    "loan_contractaddress": "0xe714a54e05E5253C63398CEc7109BE830B548201",
+    "issuer_contractaddress": "0x3990427F5C2F27193D5a81cF960d0A6c93fc21D6",
+    "stable_coin_contractaddress": "0xf2D4Ab58eA537bf7F066C0c2e3402181e52D9939",
+    "staking_factory_address": "0xbF769e9B03D308FaCE5414F4706FE935d0aB9AE9",
+    "stakingToken1_decimals": 18,
+    "stakingToken2_decimals": 18,
+    "multicall3": "0x174BCCBfe2523af4af7791B963F52EEb81d0E92f",
+    "issuer_btc_address": "1AEXQ6Gtu61bXPZnuQPXtJhXoEkTXCfYfH",
+    "start_block": 35719121,
+    "batch_size": 50000
   }
 }

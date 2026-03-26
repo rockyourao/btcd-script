@@ -5,9 +5,9 @@
  * Issuer 调用 closeOrder(orderAddress) 时，Order 合约会执行并发出该事件。
  *
  * 使用方法:
- * npx ts-node getCloseOrderTx.ts --order 0x9f0e43c9b4cad5666ca49849f8dba9d9d871405a
- * npx ts-node getCloseOrderTx.ts --order 0x9f0e43c9b4cad5666ca49849f8dba9d9d871405a --network pgp-prod
- * npx ts-node getCloseOrderTx.ts --file data/pgp-prod/overdue_orders.json
+ * npx ts-node getCloseOrderTx.ts --order 0xd45f432d8401fb628d5f257272470953e95f693c
+ * npx ts-node getCloseOrderTx.ts --order 0xd45f432d8401fb628d5f257272470953e95f693c --network pgp-prod
+ * npx ts-node getCloseOrderTx.ts --file data/pgp-prod/close_order_tx.json
  */
 
 const { ethers } = require('ethers');
@@ -90,7 +90,7 @@ async function main(): Promise<void> {
     console.error('请指定 --order <订单地址> 或 --file <JSON文件路径>');
     console.error('示例:');
     console.error('  npx ts-node getCloseOrderTx.ts --order 0x9f0e43c9b4cad5666ca49849f8dba9d9d871405a');
-    console.error('  npx ts-node getCloseOrderTx.ts --file data/pgp-prod/overdue_orders.json');
+    console.error('  npx ts-node getCloseOrderTx.ts --file data/pgp-prod/close_order_tx.json');
     process.exit(1);
   }
 
