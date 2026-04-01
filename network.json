@@ -9,6 +9,7 @@
     "stakingToken2_decimals": 18,
     "multicall3": "0xe60961306fDcC7Bcb1beEEbfD9c7FC4420Fe37Eb",
     "issuer_btc_address": "1AEXQ6Gtu61bXPZnuQPXtJhXoEkTXCfYfH",
+    "arbitratorManager": "0xcB8039A2D7A541F730B488dD85e2a91f116A95E2",
     "start_block": 1526816,
     "batch_size": 50000
   },
@@ -22,6 +23,7 @@
     "stakingToken2_decimals": 8,
     "multicall3": "0x9A630cB37ADf42c4B77AB310AD45990A3C03b847",
     "issuer_btc_address": "1AEXQ6Gtu61bXPZnuQPXtJhXoEkTXCfYfH",
+    "arbitratorManager": "0x1f739Ce4238FF2B06D79D802Cb196aaE2025eae0",
     "start_block": 13329,
     "batch_size": 50000,
     "180order_start_time": 1769843920

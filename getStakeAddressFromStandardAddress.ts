@@ -1,5 +1,5 @@
 /*
-  npx ts-node getStakeAddressFromStandardAddress.ts 0x246e9504e0a4522671c85cee229dd50cffa51be218936371de70bdb0dee9f539
+  npx ts-node getStakeAddressFromStandardAddress.ts Ef57QmUknit5aR9iLQEnR8JDnsXSNdky8j
 */
 
 import { Base58Check } from "./base58";

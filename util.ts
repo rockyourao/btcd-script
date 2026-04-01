@@ -172,3 +172,46 @@ export async function getBlockTimestamps(blockNumbers: number[], rpcUrl: string)
 
   return blockTimestamps;
 }
+
+/**
+ * 批量 eth_getBalance（与 getBlockTimestamps 相同：单 POST 多请求，按 TIMESTAMP_BATCH_SIZE 分片）
+ */
+export async function getNativeBalancesBatch(addresses: string[], rpcUrl: string): Promise<Map<string, any>> {
+  const balances = new Map<string, any>();
+
+  for (let i = 0; i < addresses.length; i += TIMESTAMP_BATCH_SIZE) {
+    const batch = addresses.slice(i, i + TIMESTAMP_BATCH_SIZE);
+
+    try {
+      const batchRequest = batch.map((addr: string, idx: number) => ({
+        jsonrpc: '2.0',
+        id: idx,
+        method: 'eth_getBalance',
+        params: [addr, 'latest']
+      }));
+
+      const response = await fetch(rpcUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(batchRequest)
+      });
+
+      const json = await response.json();
+      const results = Array.isArray(json) ? json : [json];
+
+      for (const result of results) {
+        if (result?.error || result?.result == null || typeof result.id !== 'number') {
+          continue;
+        }
+        const addr = batch[result.id];
+        if (addr) {
+          balances.set(addr.toLowerCase(), ethers.BigNumber.from(result.result));
+        }
+      }
+    } catch (error) {
+      console.error(`批量 eth_getBalance 失败:`, error);
+    }
+  }
+
+  return balances;
+}
