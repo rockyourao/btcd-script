@@ -1427,7 +1427,7 @@ async function main() {
   console.log(`所有订单的平均实际时长: ${stats.avgValidOrderActualDurationStr}`);
   console.log(`已还款订单中实际时长小于1天的订单数量: ${stats.btcdRepaidOrdersPeriodLessThan1DayCount}`);
 
-  console.log(`\n===== 利息总额 =====`);
+  console.log(`\n===== 利息总额 （BTCD）=====`);
   console.log(`已收到的利息总额: ${formatWithCommas(stats.totalInterestValue, 2)}`);
   console.log(`NBW已收到的利息总额: ${formatWithCommas(stats.totalInterestToNBW, 2)}`);
   console.log(`待收到的利息总额（未还款订单）: ${formatWithCommas(stats.totalOutstandingInterestValue, 2)}`);
