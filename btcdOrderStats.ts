@@ -361,7 +361,8 @@ async function fetchOrderDetailsWithMulticall(
             ? realBtcAmountRaw === (collateralByOrderId.get(orderIdLower) ?? '')
             : false;
 
-          const isDelayed = borrowedTime > 0 && (deadLinesData.borrowDeadLine - takenTime) / 86400 > limitedDays ? true : false;
+          // 是否已延迟：借款时间 > 0 且 借款截止时间 - 接单时间 > 订单期限 + buffer时间（1天）
+          const isDelayed = borrowedTime > 0 && (deadLinesData.borrowDeadLine - takenTime) / 86400 > limitedDays + 1 ? true : false;
 
           orderDetailsMap.set(orderIdLower, {
             status,
@@ -1458,6 +1459,11 @@ async function main() {
   console.log(`  订单数: ${formatWithCommas(stats.overdueStats.count, 0)}`);
   console.log(`  抵押 BTC: ${formatWithCommas(stats.overdueStats.collateral, 8)} BTC`);
   console.log(`  BTCD数量: ${formatWithCommas(stats.overdueStats.tokenAmount, 2)}`);
+
+  // OrderVersion = 2
+  console.log(`\n===== OrderVersion = 2 的订单数量 =====`);
+  console.log(`  订单数: ${formatWithCommas(allRecords.filter(r => r.details?.orderVersion === 2).length, 0)}`);
+  console.log(`  已关闭订单数: ${formatWithCommas(allRecords.filter(r => r.details?.orderVersion === 2 && r.details?.status === OrderStatus.CLOSED).length, 0)}`);
 
   // 显示超时还款订单统计
   console.log(`\n===== 超时还款订单统计 =====`);
