@@ -38,7 +38,8 @@
     "stakingToken2_decimals": 18,
     "multicall3": "0x174BCCBfe2523af4af7791B963F52EEb81d0E92f",
     "issuer_btc_address": "1AEXQ6Gtu61bXPZnuQPXtJhXoEkTXCfYfH",
-    "start_block": 35719121,
+    "arbitratorManager": "0xA476D275a355d2695B674524fF50E313387526a0",
+    "start_block": 31457532,
     "batch_size": 50000
   }
 }

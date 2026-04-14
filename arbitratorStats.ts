@@ -46,7 +46,7 @@ if (!ARBITRATOR_MANAGER) {
 const arbitratorManagerAbi = require('./abi/ArbitratorManager.json').abi;
 const multicall3Abi = require('./abi/Multicall3.json').abi;
 
-/** 每轮 Multicall 处理的仲裁员数量（每人 2 个调用：basicInfo + isActiveArbitrator） */
+/** 每轮 Multicall 处理的仲裁员数量（每人 3 个调用：basicInfo + isActiveArbitrator + getAvailableStake） */
 const MULTICALL_BATCH_SIZE = 400;
 /** 低余额阈值（原生币 */
 const LOW_BALANCE_THRESHOLD_ETH = '0.06';
@@ -73,6 +73,9 @@ interface ArbitratorRecord extends ArbitratorFromEvent {
   deadline: number;
   deadlineStr: string;
   isActiveArbitrator: boolean;
+  /** getAvailableStake，18 位小数可读字符串 */
+  availableStake: string;
+  availableStakeRaw: string;
   balanceRaw: string;
   balance: string;
 }
@@ -263,11 +266,28 @@ async function fetchBasicInfoWithMulticall(
   arbitratorAddrs: string[],
   amIface: any
 ): Promise<
-  Map<string, { paused: boolean; registerTime: number; deadline: number; isActiveArbitrator: boolean }>
+  Map<
+    string,
+    {
+      paused: boolean;
+      registerTime: number;
+      deadline: number;
+      isActiveArbitrator: boolean;
+      availableStake: string;
+      availableStakeRaw: string;
+    }
+  >
 > {
   const out = new Map<
     string,
-    { paused: boolean; registerTime: number; deadline: number; isActiveArbitrator: boolean }
+    {
+      paused: boolean;
+      registerTime: number;
+      deadline: number;
+      isActiveArbitrator: boolean;
+      availableStake: string;
+      availableStakeRaw: string;
+    }
   >();
   const multicall3 = new ethers.Contract(MULTICALL3_ADDRESS, multicall3Abi, provider);
 
@@ -285,13 +305,19 @@ async function fetchBasicInfoWithMulticall(
         allowFailure: true,
         callData: amIface.encodeFunctionData('isActiveArbitrator', [addr])
       });
+      calls.push({
+        target: ARBITRATOR_MANAGER,
+        allowFailure: true,
+        callData: amIface.encodeFunctionData('getAvailableStake', [addr])
+      });
     }
 
     const results = await multicall3.aggregate3(calls);
     for (let j = 0; j < batch.length; j++) {
       const addrLower = batch[j].toLowerCase();
-      const basicRes = results[j * 2];
-      const activeRes = results[j * 2 + 1];
+      const basicRes = results[j * 3];
+      const activeRes = results[j * 3 + 1];
+      const stakeRes = results[j * 3 + 2];
       if (!basicRes.success) {
         continue;
       }
@@ -305,6 +331,17 @@ async function fetchBasicInfoWithMulticall(
           // 保持 false
         }
       }
+      let availableStake = '0';
+      let availableStakeRaw = '0';
+      if (stakeRes.success) {
+        try {
+          const stakeBn = amIface.decodeFunctionResult('getAvailableStake', stakeRes.returnData)[0];
+          availableStakeRaw = stakeBn.toString();
+          availableStake = ethers.utils.formatEther(stakeBn);
+        } catch {
+          // 保持 0
+        }
+      }
       try {
         const decoded = amIface.decodeFunctionResult('getArbitratorBasicInfo', basicRes.returnData);
         const t = decoded[0] as any;
@@ -312,7 +349,9 @@ async function fetchBasicInfoWithMulticall(
           paused: Boolean(t.paused),
           registerTime: t.registerTime.toNumber(),
           deadline: t.deadline.toNumber(),
-          isActiveArbitrator
+          isActiveArbitrator,
+          availableStake,
+          availableStakeRaw
         });
       } catch {
         // 忽略单条解码失败
@@ -330,7 +369,14 @@ function mergeRecords(
   eventMap: Map<string, ArbitratorFromEvent>,
   basicMap: Map<
     string,
-    { paused: boolean; registerTime: number; deadline: number; isActiveArbitrator: boolean }
+    {
+      paused: boolean;
+      registerTime: number;
+      deadline: number;
+      isActiveArbitrator: boolean;
+      availableStake: string;
+      availableStakeRaw: string;
+    }
   >,
   balanceMap: Map<string, any>
 ): ArbitratorRecord[] {
@@ -347,6 +393,8 @@ function mergeRecords(
       deadline: basic?.deadline ?? 0,
       deadlineStr: timestampToStr(basic?.deadline ?? 0),
       isActiveArbitrator: basic?.isActiveArbitrator ?? false,
+      availableStake: basic?.availableStake ?? '0',
+      availableStakeRaw: basic?.availableStakeRaw ?? '0',
       balanceRaw: bal.toString(),
       balance: ethers.utils.formatEther(bal)
     });
@@ -419,12 +467,16 @@ async function main() {
   const endTimeBalance = Date.now();
   const durationBalance = (endTimeBalance - startTimeBalance) / 1000;
   console.log(`✨仲裁员原生币余额查询耗时: ${durationBalance.toFixed(2)} 秒`);
-  console.log(`✅ 余额已更新: ${balanceMap.size}`);
+  console.log(`✅ 余额已更新`);
 
 
   const records = mergeRecords(eventMap, basicMap, balanceMap);
   const totalBalance = records.reduce(
     (s, r) => s.add(ethers.BigNumber.from(r.balanceRaw)),
+    ethers.BigNumber.from(0)
+  );
+  const totalStakeBalance = records.reduce(
+    (s, r) => s.add(ethers.BigNumber.from(r.availableStakeRaw)),
     ethers.BigNumber.from(0)
   );
 
@@ -448,9 +500,10 @@ async function main() {
   console.log(`非活跃仲裁员: ${formatWithCommas(inactiveArbitrators.length, 0)}`);
   console.log(`低余额仲裁员: ${formatWithCommas(lowBalanceRecords.length, 0)}`);
   console.log(`仲裁员 PGA 余额合计: ${formatWithCommas(ethers.utils.formatEther(totalBalance), 4)}`);
+  console.log(`仲裁员质押的 ELA 余额合计: ${formatWithCommas(ethers.utils.formatEther(totalStakeBalance), 4)}`);
 
   if (lowBalanceRecords.length > 0) {
-    console.log(`\n===== 低余额仲裁员（按余额升序）=====`);
+    console.log(`\n===== 低余额仲裁员(余额 < ${LOW_BALANCE_THRESHOLD_ETH} 按余额升序）=====`);
     lowBalanceRecords.forEach((r, i) => {
       console.log(`  ${i + 1}. ${r.arbitrator}  余额: ${r.balance}`);
     });
@@ -476,6 +529,8 @@ async function main() {
         inactiveArbitrators: inactiveArbitrators.length,
         totalNativeBalance: ethers.utils.formatEther(totalBalance),
         totalNativeBalanceRaw: totalBalance.toString(),
+        totalStakeBalance: ethers.utils.formatEther(totalStakeBalance),
+        totalStakeBalanceRaw: totalStakeBalance.toString(),
         records
       },
       null,

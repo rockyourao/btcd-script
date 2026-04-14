@@ -984,7 +984,9 @@ function buildOrderStats(
     totalCollateralDiscount: allRecords.filter(r => r.details?.borrowedTime > 0).reduce((sum, r) => sum + parseFloat(r.collateral), 0),
     totalTokenAmount: allRecords.filter(r => r.details?.borrowedTime > 0).reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0),
     totalOptionCost:
-      validOrdersList.reduce((sum, r) => sum + parseFloat(r.details?.interestValue || '0'), 0) / 6,
+      validOrdersList
+        .filter(r => (r.details?.orderVersion ?? 0) <= 1)
+        .reduce((sum, r) => sum + parseFloat(r.details?.interestValue || '0'), 0) / 6,
     totalInterestValue: totalInterestValue,
     totalInterestToNBW: totalInterestValue * 0.3,
     totalOutstandingInterestValue: totalOutstandingInterestValue,
