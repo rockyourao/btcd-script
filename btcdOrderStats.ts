@@ -470,15 +470,22 @@ async function fetchOrderClosedAndDelayedEvents(
         fromBlock,
         toBlock
       });
+      let batchMatched = 0;
       for (const log of logs) {
         const addr = (log.address || '').toLowerCase();
         if (!orderIdSet.has(addr)) continue;
         const t0 = log.topics[0];
         if (t0 === ORDER_CLOSED_TOPIC) {
           allLogsClose.push(log);
+          batchMatched++;
         } else if (t0 === ORDER_DELAYED_TOPIC) {
           allLogsDelayed.push(log);
+          batchMatched++;
         }
+      }
+      if (batchMatched > 0) {
+        const total = allLogsClose.length + allLogsDelayed.length;
+        console.log(`区块 ${fromBlock} - ${toBlock}: 找到 ${batchMatched} 条 (累计: ${total})`);
       }
     } catch (error) {
       console.error(`获取 OrderClosed/OrderDelayed 事件区块 ${fromBlock}-${toBlock} 失败:`, error);
@@ -1497,7 +1504,7 @@ async function main() {
     console.log(`  ${i + 1}. ${item[0]} 质押BTC: ${formatWithCommas(item[1], 2)} BTC`);
   });
 
-    // 列出所有过期订单中，关闭时间小于订单的proofTimestamp+limitedDays*86400的订单
+  // 列出所有过期订单中，关闭时间小于订单的proofTimestamp+limitedDays*86400的订单
   // TODO:实际应该是质押btc交易时间+loktime1，为了简化，这里暂时使用proofTimestamp+limitedDays*86400
   console.log("\n⚠️  提前关闭的订单ID:")
   derived.alloverdueOrders.forEach(order => {
