@@ -4,6 +4,7 @@
  * 使用方法:
  * npx ts-node btcdStakingStats.ts
  * npx ts-node btcdStakingStats.ts --network pgp-prod  # 指定网络
+ * npx ts-node btcdStakingStats.ts --network pgp-prod --no-update  # 仅读本地 JSON 统计，不拉链、不写文件
  */
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -716,13 +717,10 @@ async function getStakingContractCreatedLogs(
 
 async function main() {
   const startTime = Date.now();
-  console.log('\n===== 获取 StakingContractCreated 事件 =====');
+  const noUpdate = process.argv.includes('--no-update');
 
   const provider = new (ethers as any).providers.JsonRpcProvider(RPC_URL);
   const outputFile = `data/${network}/btcd_staking_stats.json`;
-
-  const currentBlock: number = await provider.getBlockNumber();
-  console.log(`当前区块高度: ${currentBlock}`);
 
   // 1. 从已有数据文件中读取数据
   let existingRecords: StakingRecord[] = [];
@@ -745,12 +743,35 @@ async function main() {
     console.error(`读取 ${outputFile} 失败:`, error);
   }
 
-  // 2. 获取新创建的 Staking 合约
-  const beforeBlock = savedCurrentBlock > 0 ? savedCurrentBlock : undefined;
-  console.log(`\n获取从区块 ${beforeBlock ? beforeBlock : INITIAL_START_BLOCK} 到 ${currentBlock} 的新 Staking 合约...`);
-  const newRecords = await getStakingContractCreatedLogs(provider, currentBlock, beforeBlock);
+  let currentBlock: number;
 
-  console.log(`\n找到 ${newRecords.length} 个新 Staking 合约`);
+  if (noUpdate) {
+    if (existingRecords.length === 0) {
+      console.error(
+        `\n--no-update 需要已有非空数据文件: ${outputFile}\n请先不带 --no-update 运行一次以拉取链上数据。`
+      );
+      process.exit(1);
+    }
+    currentBlock = savedCurrentBlock;
+    console.log(`\n===== --no-update =====`);
+    console.log(`仅从本地读取统计，不请求链上、不写回文件`);
+    console.log(`本地快照区块高度: ${currentBlock}，记录数: ${existingRecords.length}`);
+  } else {
+    console.log('\n===== 获取 StakingContractCreated 事件 =====');
+    currentBlock = await provider.getBlockNumber();
+    console.log(`当前区块高度: ${currentBlock}`);
+  }
+
+  // 2. 获取新创建的 Staking 合约
+  let newRecords: StakingRecord[] = [];
+  if (!noUpdate) {
+    const beforeBlock = savedCurrentBlock > 0 ? savedCurrentBlock : undefined;
+    console.log(`\n获取从区块 ${beforeBlock ? beforeBlock : INITIAL_START_BLOCK} 到 ${currentBlock} 的新 Staking 合约...`);
+    newRecords = await getStakingContractCreatedLogs(provider, currentBlock, beforeBlock);
+    console.log(`\n找到 ${newRecords.length} 个新 Staking 合约`);
+  } else {
+    console.log(`\n跳过：新 Staking 合约扫描 (--no-update)`);
+  }
 
   // 3. 合并数据
   const existingRecordsMap = new Map<string, StakingRecord>();
@@ -771,10 +792,15 @@ async function main() {
   allRecords.sort((a, b) => a.blockNumber - b.blockNumber);
 
   // 4. 获取 Staking Token 地址
-  console.log(`\n获取 Staking Token 地址...`);
-  const stakingTokens = await getStakingTokenAddresses(provider);
-  console.log(`Token1: ${stakingTokens.token1}`);
-  console.log(`Token2: ${stakingTokens.token2}`);
+  let stakingTokens = { token1: ethers.constants.AddressZero, token2: ethers.constants.AddressZero };
+  if (!noUpdate) {
+    console.log(`\n获取 Staking Token 地址...`);
+    stakingTokens = await getStakingTokenAddresses(provider);
+    console.log(`Token1: ${stakingTokens.token1}`);
+    console.log(`Token2: ${stakingTokens.token2}`);
+  } else {
+    console.log(`\n跳过：Staking Token 地址查询 (--no-update)`);
+  }
 
   // 5. 获取事件（增量更新）
   const stakingContracts = allRecords.map(r => r.stakingContract);
@@ -793,7 +819,9 @@ async function main() {
 
   // 只获取新区块范围内的事件
   let newEvents: StakingEvent[] = [];
-  if (eventStartBlock <= currentBlock) {
+  if (noUpdate) {
+    console.log(`\n跳过：增量 Staking 事件 (--no-update)`);
+  } else if (eventStartBlock <= currentBlock) {
     console.log(`\n获取从区块 ${eventStartBlock} 到 ${currentBlock} 的新事件...`);
     newEvents = await fetchAllStakingEventsFast(
       provider,
@@ -894,7 +922,8 @@ async function main() {
   const existingTokenTransfersMap = new Map<string, TokenTransfer[]>();
   let hasExistingTokenTransfers = false;
 
-  if (!forceRefreshTransfers) {
+  // --no-update 时不拉链，必须从本地记录带上已有 tokenTransfers（与 forceRefresh 互斥时仍以本地为准）
+  if (!forceRefreshTransfers || noUpdate) {
     for (const record of existingRecords) {
       if (record.tokenTransfers && record.tokenTransfers.length > 0) {
         existingTokenTransfersMap.set(record.stakingContract.toLowerCase(), record.tokenTransfers);
@@ -914,7 +943,7 @@ async function main() {
   const tokenAddresses = [stakingTokens.token1, stakingTokens.token2].filter(addr => addr && addr !== '0x0000000000000000000000000000000000000000');
 
   // 只有eco链需要获取Token Transfer事件（为了解决漏洞，统一将旧质押合约都迁移到新质押合约，质押资产通过Transfer转移）
-  if (network == 'eco-prod') {
+  if (!noUpdate && network == 'eco-prod') {
     const tokenTransferEndBlock = 3000000;
     if (tokenTransferStartBlock < tokenTransferEndBlock && tokenAddresses.length > 0) {
       console.log(hasExistingTokenTransfers
@@ -929,6 +958,8 @@ async function main() {
         tokenAddresses
       );
     }
+  } else if (noUpdate && network == 'eco-prod') {
+    console.log(`\n跳过：Token Transfer 增量 (--no-update)`);
   }
 
   // 将新的 Token Transfer 事件按 Staking 合约分组
@@ -1093,16 +1124,46 @@ async function main() {
   console.log(`  Token1: ${formatWithCommas(stats.totalToken1, 4)}`);
   console.log(`  Token2: ${formatWithCommas(stats.totalToken2, 4)}`);
 
+  console.log(`\n===== 质押截止日期（倒序 Top 10） =====`);
+  const formatEndUtcDateHour = (tsSec: number): string => {
+    if (!tsSec) return '';
+    const x = new Date(tsSec * 1000);
+    const p = (n: number) => String(n).padStart(2, '0');
+    return `${x.getUTCFullYear()}-${p(x.getUTCMonth() + 1)}-${p(x.getUTCDate())} ${p(x.getUTCHours())}`;
+  };
+  const withDeadline = activeStakings.filter(
+    (r) => r.details != null && r.details.endTime > 0
+  );
+  const top10ByEndDesc = [...withDeadline]
+    .sort((a, b) => (b.details!.endTime ?? 0) - (a.details!.endTime ?? 0))
+    .slice(0, 10);
+  if (top10ByEndDesc.length === 0) {
+    console.log(`  （无有效 endTime 的活跃质押）`);
+  } else {
+    top10ByEndDesc.forEach((r, i) => {
+      const d = r.details!;
+      const eth = parseFloat(d.ethAmount || '0');
+      const t1 = parseFloat(d.token1Amount || '0');
+      const t2 = parseFloat(d.token2Amount || '0');
+      console.log(
+        `  ${i + 1}. ${r.stakingContract} 截止: ${formatEndUtcDateHour(d.endTime)} | Native ${formatWithCommas(eth, 0)} | Token1 ${formatWithCommas(t1, 0)} | Token2 ${formatWithCommas(t2, 0)}`
+      );
+    });
+  }
+
   if (allRecords.length > 0) {
-    // 保存到文件
-    fs.writeFileSync(outputFile, JSON.stringify({
-      stats,
-      factoryAddress: STAKING_FACTORY_ADDRESS,
-      currentBlock,
-      records: allRecords
-    }, null, 2));
-    console.log(`\n记录已保存到 ${outputFile}`);
-    console.log(`本次新增 Staking 合约: ${newRecords.length} 个`);
+    if (!noUpdate) {
+      fs.writeFileSync(outputFile, JSON.stringify({
+        stats,
+        factoryAddress: STAKING_FACTORY_ADDRESS,
+        currentBlock,
+        records: allRecords
+      }, null, 2));
+      console.log(`\n记录已保存到 ${outputFile}`);
+      console.log(`本次新增 Staking 合约: ${newRecords.length} 个`);
+    } else {
+      console.log(`\n--no-update：未写入 ${outputFile}`);
+    }
   }
 
   // 显示脚本执行总时间

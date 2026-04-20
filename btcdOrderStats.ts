@@ -2,7 +2,7 @@
  * 获取 LoanContract 合约的 OrderCreated 事件并读取订单详细信息
  *
  * 使用方法:
- * npx ts-node btcdOrderStats.ts                     # 获取所有订单 (默认 eco-prod)
+ * npx ts-node btcdOrderStats.ts                     # 获取所有订单 (默认 pgp-prod)
  * npx ts-node btcdOrderStats.ts --network pgp-prod  # 指定网络
  * npx ts-node btcdOrderStats.ts --limit 50          # 获取最新 50 条
  * npx ts-node btcdOrderStats.ts --orderType 0       # 按订单类型过滤
@@ -57,6 +57,9 @@ const ORDER_CLOSED_TOPIC = ethers.utils.id('OrderClosed()');
 // event OrderDelayed(bytes32 indexed newBtcTxId);
 const ORDER_DELAYED_TOPIC = ethers.utils.id('OrderDelayed(bytes32)');
 
+/** topic0 OR：一次 getLogs 同时拉 OrderClosed + OrderDelayed（仅用于订单合约日志） */
+const ORDER_CLOSED_OR_DELAYED_TOPICS = [ORDER_CLOSED_TOPIC, ORDER_DELAYED_TOPIC];
+
 // 订单类型枚举
 enum OrderType {
   Borrow = 0,
@@ -109,6 +112,16 @@ interface OrderRecord {
   details?: OrderDetails;
 }
 
+/** 单笔 OrderDelayed 链上事件（同一订单可有多条） */
+interface OrderDelayedEventItem {
+  delayTime: number;
+  delayTimeStr: string;
+  delayTxId: string;
+  newBtcTxId: string;
+  blockNumber: number;
+  logIndex: number;
+}
+
 interface OrderDetails {
   status: number;               // 订单状态
   statusName: string;           // 订单状态名称
@@ -142,6 +155,8 @@ interface OrderDetails {
   proofTimestampStr: string;    // proofTimestamp 字符串
   useDiscount: boolean;         // collateral == toLenderBtcTx.amount
   isDelayed: boolean;           // 是否已延迟
+  /** 链上 OrderDelayed 事件列表（可多次），按区块与 logIndex 升序 */
+  orderDelayedEvents?: OrderDelayedEventItem[];
   closeTime?: number;           // 订单关闭时间（从 OrderClosed 事件获取）
   closeTimeStr?: string;       // 订单关闭时间字符串
   closeTxId?: string;          // 订单关闭对应的交易 ID
@@ -164,16 +179,18 @@ interface QueryOptions {
 }
 
 // Multicall 批次大小
-const MULTICALL_BATCH_SIZE = 200;
+const MULTICALL_BATCH_SIZE = 100;
 
 /**
  * 使用 Multicall3 批量获取订单详细信息
  * @param collateralByOrderId 可选，orderId(lowerCase) -> collateralRaw，用于在内部计算 useDiscount
+ * @param existingOrderDelayedByOrderId 可选，增量同步时保留已有 OrderDelayed 事件，避免被本轮 multicall 覆盖
  */
 async function fetchOrderDetailsWithMulticall(
   provider: any,
   orderIds: string[],
-  collateralByOrderId?: Map<string, string>
+  collateralByOrderId?: Map<string, string>,
+  existingOrderDelayedByOrderId?: Map<string, OrderDelayedEventItem[]>
 ): Promise<Map<string, OrderDetails>> {
   const orderDetailsMap = new Map<string, OrderDetails>();
   const orderInterface = new ethers.utils.Interface(orderAbi);
@@ -361,8 +378,9 @@ async function fetchOrderDetailsWithMulticall(
             ? realBtcAmountRaw === (collateralByOrderId.get(orderIdLower) ?? '')
             : false;
 
-          // 是否已延迟：借款时间 > 0 且 借款截止时间 - 接单时间 > 订单期限 + buffer时间（1天）
-          const isDelayed = borrowedTime > 0 && (deadLinesData.borrowDeadLine - takenTime) / 86400 > limitedDays + 1 ? true : false;
+          // 是否已延迟：以链上 OrderDelayed 事件为准（见 orderDelayedEvents；增量同步时从 existing 带入）
+          const preservedDelayed = existingOrderDelayedByOrderId?.get(orderIdLower);
+          const isDelayed = (preservedDelayed?.length ?? 0) > 0;
 
           orderDetailsMap.set(orderIdLower, {
             status,
@@ -391,6 +409,7 @@ async function fetchOrderDetailsWithMulticall(
             proofTimestampStr: timestampToStr(proofTimestamp),
             useDiscount,
             isDelayed,
+            ...(preservedDelayed && preservedDelayed.length > 0 ? { orderDelayedEvents: preservedDelayed } : {}),
             orderVersion,
             timeoutRepayer,
             timeoutRepayerBtcAddress,
@@ -423,77 +442,111 @@ interface OrderClosedInfo {
 }
 
 /**
- * 通过 ORDER_CLOSED_TOPIC 获取订单关闭时间和对应交易 ID
- * OrderClosed 事件从订单合约地址发出，log.address 为 orderId
- * 按区块范围分批查询（ethers v5 不支持 address 数组）
+ * 同一区块批次内用 topic0 OR 一次 getLogs 拉取 OrderClosed + OrderDelayed，减少 RPC 往返。
+ * 二者均从订单合约发出，log.address 为 orderId，过滤逻辑一致。
+ *
+ * OrderCreated 仍单独查询：只发自 Loan 合约且 topics 不同；且该阶段在汇总 orderId 之前。
  */
-async function fetchOrderClosedEvents(
+async function fetchOrderClosedAndDelayedEvents(
   provider: any,
   orderIds: string[],
   startBlock: number,
   endBlock: number
-): Promise<Map<string, OrderClosedInfo>> {
-  const resultMap = new Map<string, OrderClosedInfo>();
-  if (orderIds.length === 0) return resultMap;
+): Promise<{ closeInfoMap: Map<string, OrderClosedInfo>; delayedEventsMap: Map<string, OrderDelayedEventItem[]> }> {
+  const closeInfoMap = new Map<string, OrderClosedInfo>();
+  const delayedEventsMap = new Map<string, OrderDelayedEventItem[]>();
+  if (orderIds.length === 0) return { closeInfoMap, delayedEventsMap };
 
   const orderIdSet = new Set(orderIds.map(id => ethers.utils.getAddress(id).toLowerCase()));
-  console.log(`\n获取 ${orderIdSet.size} 个订单的 OrderClosed 事件 (区块 ${startBlock} - ${endBlock})...`);
-  const allLogs: any[] = [];
+  console.log(`\n获取 ${orderIdSet.size} 个订单的 OrderClosed + OrderDelayed 事件 (区块 ${startBlock} - ${endBlock})...`);
+  const allLogsClose: any[] = [];
+  const allLogsDelayed: any[] = [];
 
   for (let fromBlock = startBlock; fromBlock <= endBlock; fromBlock += BATCH_SIZE) {
     const toBlock = Math.min(fromBlock + BATCH_SIZE - 1, endBlock);
     try {
       const logs = await provider.getLogs({
-        topics: [ORDER_CLOSED_TOPIC],
+        topics: [ORDER_CLOSED_OR_DELAYED_TOPICS],
         fromBlock,
         toBlock
       });
       for (const log of logs) {
         const addr = (log.address || '').toLowerCase();
-        if (orderIdSet.has(addr)) {
-          allLogs.push(log);
+        if (!orderIdSet.has(addr)) continue;
+        const t0 = log.topics[0];
+        if (t0 === ORDER_CLOSED_TOPIC) {
+          allLogsClose.push(log);
+        } else if (t0 === ORDER_DELAYED_TOPIC) {
+          allLogsDelayed.push(log);
         }
       }
     } catch (error) {
-      console.error(`获取 OrderClosed 事件区块 ${fromBlock}-${toBlock} 失败:`, error);
+      console.error(`获取 OrderClosed/OrderDelayed 事件区块 ${fromBlock}-${toBlock} 失败:`, error);
     }
   }
 
-  if (allLogs.length === 0) return resultMap;
+  const blockNumbers = [
+    ...new Set([...allLogsClose, ...allLogsDelayed].map((log: any) => log.blockNumber))
+  ] as number[];
+  if (blockNumbers.length === 0) {
+    return { closeInfoMap, delayedEventsMap };
+  }
 
-  const blockNumbers = [...new Set(allLogs.map((log: any) => log.blockNumber))] as number[];
   const blockTimestamps = await getBlockTimestamps(blockNumbers, RPC_URL);
 
-  for (const log of allLogs) {
-    const orderId = ethers.utils.getAddress(log.address);
-    const orderIdLower = orderId.toLowerCase();
-    if (resultMap.has(orderIdLower)) continue; // 每个订单只取第一条（理论上每个订单只会被 close 一次）
+  for (const log of allLogsClose) {
+    const orderIdLower = ethers.utils.getAddress(log.address).toLowerCase();
+    if (closeInfoMap.has(orderIdLower)) continue;
     const timestamp = blockTimestamps.get(log.blockNumber) || 0;
-    resultMap.set(orderIdLower, {
+    closeInfoMap.set(orderIdLower, {
       closeTime: timestamp,
       closeTimeStr: timestampToStr(timestamp),
       closeTxId: log.transactionHash
     });
   }
 
-  return resultMap;
+  for (const log of allLogsDelayed) {
+    const orderIdLower = ethers.utils.getAddress(log.address).toLowerCase();
+    const timestamp = blockTimestamps.get(log.blockNumber) || 0;
+    const newBtcTxId = log.topics?.[1] ? String(log.topics[1]) : '';
+    const logIndex = parseLogIndex(log);
+    const item: OrderDelayedEventItem = {
+      delayTime: timestamp,
+      delayTimeStr: timestampToStr(timestamp),
+      delayTxId: log.transactionHash,
+      newBtcTxId,
+      blockNumber: log.blockNumber,
+      logIndex
+    };
+    const list = delayedEventsMap.get(orderIdLower) || [];
+    list.push(item);
+    delayedEventsMap.set(orderIdLower, list);
+  }
+
+  for (const [k, list] of delayedEventsMap) {
+    delayedEventsMap.set(k, sortOrderDelayedEvents(list));
+  }
+
+  return { closeInfoMap, delayedEventsMap };
 }
 
-/**
- * 将 OrderClosed 事件数据合并到 OrderDetails（用于 detailsMap）
- */
-function mergeOrderClosedIntoDetails(
-  detailsMap: Map<string, OrderDetails>,
-  closeInfoMap: Map<string, OrderClosedInfo>
-): void {
-  for (const [orderIdLower, details] of detailsMap) {
-    const closeInfo = closeInfoMap.get(orderIdLower);
-    if (closeInfo) {
-      details.closeTime = closeInfo.closeTime;
-      details.closeTimeStr = closeInfo.closeTimeStr;
-      details.closeTxId = closeInfo.closeTxId;
-    }
-  }
+function parseLogIndex(log: any): number {
+  const li = log.logIndex;
+  if (li === undefined || li === null) return 0;
+  if (typeof li === 'number') return li;
+  if (typeof li === 'string') return parseInt(li, 16);
+  if (typeof li.toNumber === 'function') return li.toNumber();
+  return Number(li);
+}
+
+function orderDelayedEventKey(e: OrderDelayedEventItem): string {
+  return `${e.blockNumber}:${e.delayTxId}:${e.logIndex}`;
+}
+
+function sortOrderDelayedEvents(events: OrderDelayedEventItem[]): OrderDelayedEventItem[] {
+  return [...events].sort((a, b) =>
+    a.blockNumber !== b.blockNumber ? a.blockNumber - b.blockNumber : a.logIndex - b.logIndex
+  );
 }
 
 /**
@@ -511,6 +564,37 @@ function mergeOrderClosedIntoRecords(
       record.details.closeTimeStr = closeInfo.closeTimeStr;
       record.details.closeTxId = closeInfo.closeTxId;
     }
+  }
+}
+
+/**
+ * 将 OrderDelayed 事件数据合并到 OrderRecord 的 details（增量：与已有 orderDelayedEvents 去重合并）
+ * 最后会按 orderDelayedEvents.length 统一写回 isDelayed；map 为空时也可用于仅同步 isDelayed
+ */
+function mergeOrderDelayedIntoRecords(
+  records: OrderRecord[],
+  delayedEventsMap: Map<string, OrderDelayedEventItem[]>
+): void {
+  for (const record of records) {
+    if (!record.details) continue;
+    const incoming = delayedEventsMap.get(record.orderId.toLowerCase());
+    if (!incoming || incoming.length === 0) continue;
+    const existing = record.details.orderDelayedEvents ?? [];
+    const seen = new Set(existing.map(orderDelayedEventKey));
+    const merged = [...existing];
+    for (const ev of incoming) {
+      const key = orderDelayedEventKey(ev);
+      if (!seen.has(key)) {
+        merged.push(ev);
+        seen.add(key);
+      }
+    }
+    record.details.orderDelayedEvents = sortOrderDelayedEvents(merged);
+  }
+
+  for (const record of records) {
+    if (!record.details) continue;
+    record.details.isDelayed = (record.details.orderDelayedEvents?.length ?? 0) > 0;
   }
 }
 
@@ -751,7 +835,19 @@ async function updateDetailsAndMergeRecords(
   if (nonClosedOrders.length > 0) {
     const orderIdsToUpdate = nonClosedOrders.map(r => r.orderId);
     const collateralByOrderId = new Map(nonClosedOrders.map(r => [r.orderId.toLowerCase(), r.collateralRaw]));
-    updatedDetailsMap = await fetchOrderDetailsWithMulticall(provider, orderIdsToUpdate, collateralByOrderId);
+    const existingOrderDelayedByOrderId = new Map<string, OrderDelayedEventItem[]>();
+    for (const r of nonClosedOrders) {
+      const ev = r.details?.orderDelayedEvents;
+      if (ev && ev.length > 0) {
+        existingOrderDelayedByOrderId.set(r.orderId.toLowerCase(), ev);
+      }
+    }
+    updatedDetailsMap = await fetchOrderDetailsWithMulticall(
+      provider,
+      orderIdsToUpdate,
+      collateralByOrderId,
+      existingOrderDelayedByOrderId
+    );
   }
 
   const existingRecordsMap = new Map<string, OrderRecord>();
@@ -774,11 +870,22 @@ async function updateDetailsAndMergeRecords(
 
   // 通过 ORDER_CLOSED_TOPIC 获取所有订单的关闭时间和交易 ID，合并到 OrderDetails（增量：仅从 startBlock 开始）
   const allOrderIds = allRecords.map(r => r.orderId);
-  const closeInfoMap = await fetchOrderClosedEvents(provider, allOrderIds, startBlock, currentBlock);
+  const { closeInfoMap, delayedEventsMap } = await fetchOrderClosedAndDelayedEvents(
+    provider,
+    allOrderIds,
+    startBlock,
+    currentBlock
+  );
   if (closeInfoMap.size > 0) {
     console.log(`✅获取到 ${closeInfoMap.size} 个订单的 OrderClosed 事件`);
     mergeOrderClosedIntoRecords(allRecords, closeInfoMap);
   }
+  if (delayedEventsMap.size > 0) {
+    let totalEvents = 0;
+    for (const list of delayedEventsMap.values()) totalEvents += list.length;
+    console.log(`✅获取到 ${delayedEventsMap.size} 个订单共 ${totalEvents} 条 OrderDelayed 事件`);
+  }
+  mergeOrderDelayedIntoRecords(allRecords, delayedEventsMap);
 
   return { allRecords, updatedDetailsMap };
 }
@@ -985,7 +1092,7 @@ function buildOrderStats(
     totalTokenAmount: allRecords.filter(r => r.details?.borrowedTime > 0).reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0),
     totalOptionCost:
       validOrdersList
-        .filter(r => (r.details?.orderVersion ?? 0) <= 1)
+        .filter(r => (r.details?.orderVersion ?? 0) !== 2)
         .reduce((sum, r) => sum + parseFloat(r.details?.interestValue || '0'), 0) / 6,
     totalInterestValue: totalInterestValue,
     totalInterestToNBW: totalInterestValue * 0.3,
