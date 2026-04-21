@@ -1,5 +1,5 @@
 /**
- * ArbitratorManager：拉取 ArbitratorRegistered 事件，批量 getArbitratorBasicInfo，并查询各仲裁员地址原生币余额。
+ * ArbitratorManager：拉取 ArbitratorRegistered 事件，批量 getArbitratorBasicInfo，并查询各守护者地址原生币余额。
  *
  * 使用:
  * npx ts-node arbitratorStats.ts
@@ -46,7 +46,7 @@ if (!ARBITRATOR_MANAGER) {
 const arbitratorManagerAbi = require('./abi/ArbitratorManager.json').abi;
 const multicall3Abi = require('./abi/Multicall3.json').abi;
 
-/** 每轮 Multicall 处理的仲裁员数量（每人 3 个调用：basicInfo + isActiveArbitrator + getAvailableStake） */
+/** 每轮 Multicall 处理的守护者数量（每人 3 个调用：basicInfo + isActiveArbitrator + getAvailableStake） */
 const MULTICALL_BATCH_SIZE = 200;
 /** 低余额阈值（原生币 */
 const LOW_BALANCE_THRESHOLD_ETH = '0.06';
@@ -407,7 +407,7 @@ function mergeRecords(
 async function main() {
   const { skipTimestamp, rescanEvents } = parseArgs();
   const startTime = Date.now();
-  console.log(`\n===== [网络: ${network}] 仲裁员统计 =====`);
+  console.log(`\n===== [网络: ${network}] 守护者统计 =====`);
 
   const provider = new ethers.providers.JsonRpcProvider(RPC_URL);
   const amIface = new ethers.utils.Interface(arbitratorManagerAbi);
@@ -430,7 +430,7 @@ async function main() {
     lastEventSyncedBlock = loaded.lastEventSyncedBlock;
     if (existingEventMap.size > 0) {
       console.log(
-        `\n已加载本地 ${existingEventMap.size} 个仲裁员；事件上次已同步至区块 ${lastEventSyncedBlock}，将从 ${lastEventSyncedBlock + 1} 增量拉取`
+        `\n已加载本地 ${existingEventMap.size} 个守护者；事件上次已同步至区块 ${lastEventSyncedBlock}，将从 ${lastEventSyncedBlock + 1} 增量拉取`
       );
     }
   }
@@ -444,29 +444,29 @@ async function main() {
     skipTimestamp
   );
   const eventMap = mergeEventMaps(existingEventMap, newEventMap);
-  console.log(`\n合并后仲裁员总数: ${eventMap.size}（本地 + 本段增量）`);
+  console.log(`\n合并后守护者总数: ${eventMap.size}（本地 + 本段增量）`);
 
   const addrs = [...eventMap.keys()].map(k => eventMap.get(k)!.arbitrator);
 
   if (addrs.length === 0) {
-    console.log('未发现仲裁员，退出。');
+    console.log('未发现守护者，退出。');
     return;
   }
 
-  console.log(`\n批量更新仲裁员基础信息 (${addrs.length} 个)…`);
+  console.log(`\n批量更新守护者基础信息 (${addrs.length} 个)…`);
   const startTimeBasic = Date.now();
   const basicMap = await fetchBasicInfoWithMulticall(provider, addrs, amIface);
-  console.log(`✅ 成功更新仲裁员基础信息: ${basicMap.size}/${addrs.length}`);
+  console.log(`✅ 成功更新守护者基础信息: ${basicMap.size}/${addrs.length}`);
   const endTimeBasic = Date.now();
   const durationBasic = (endTimeBasic - startTimeBasic) / 1000;
-  console.log(`✨仲裁员基础信息更新耗时: ${durationBasic.toFixed(2)} 秒`);
+  console.log(`✨守护者基础信息更新耗时: ${durationBasic.toFixed(2)} 秒`);
 
-  console.log(`\n批量查询仲裁员原生币余额…`);
+  console.log(`\n批量查询守护者原生币余额…`);
   const startTimeBalance = Date.now();
   const balanceMap = await getNativeBalancesBatch(addrs, RPC_URL);
   const endTimeBalance = Date.now();
   const durationBalance = (endTimeBalance - startTimeBalance) / 1000;
-  console.log(`✨仲裁员原生币余额查询耗时: ${durationBalance.toFixed(2)} 秒`);
+  console.log(`✨守护者原生币余额查询耗时: ${durationBalance.toFixed(2)} 秒`);
   console.log(`✅ 余额已更新`);
 
 
@@ -494,16 +494,16 @@ async function main() {
   const activeArbitrators = records.filter(r => r.isActiveArbitrator);
   const inactiveArbitrators = records.filter(r => !r.isActiveArbitrator);
 
-  console.log(`\n===== 仲裁员统计 =====`);
-  console.log(`仲裁员总数: ${formatWithCommas(records.length, 0)}`);
-  console.log(`活跃仲裁员: ${formatWithCommas(activeArbitrators.length, 0)}`);
-  console.log(`非活跃仲裁员: ${formatWithCommas(inactiveArbitrators.length, 0)}`);
-  console.log(`低余额仲裁员: ${formatWithCommas(lowBalanceRecords.length, 0)}`);
-  console.log(`仲裁员 PGA 余额合计: ${formatWithCommas(ethers.utils.formatEther(totalBalance), 4)}`);
-  console.log(`仲裁员质押的 ELA 余额合计: ${formatWithCommas(ethers.utils.formatEther(totalStakeBalance), 4)}`);
+  console.log(`\n===== 守护者统计 =====`);
+  console.log(`守护者总数: ${formatWithCommas(records.length, 0)}`);
+  console.log(`活跃守护者: ${formatWithCommas(activeArbitrators.length, 0)}`);
+  console.log(`非活跃守护者: ${formatWithCommas(inactiveArbitrators.length, 0)}`);
+  console.log(`低余额守护者: ${formatWithCommas(lowBalanceRecords.length, 0)}`);
+  console.log(`守护者 PGA 余额合计: ${formatWithCommas(ethers.utils.formatEther(totalBalance), 4)}`);
+  console.log(`守护者质押的 ELA 余额合计: ${formatWithCommas(ethers.utils.formatEther(totalStakeBalance), 4)}`);
 
   if (lowBalanceRecords.length > 0) {
-    console.log(`\n===== 低余额仲裁员(余额 < ${LOW_BALANCE_THRESHOLD_ETH} 按余额升序）=====`);
+    console.log(`\n===== 低余额守护者(余额 < ${LOW_BALANCE_THRESHOLD_ETH} 按余额升序）=====`);
     lowBalanceRecords.forEach((r, i) => {
       console.log(`  ${i + 1}. ${r.arbitrator}  余额: ${r.balance}`);
     });

@@ -3,6 +3,22 @@ import { TIMESTAMP_BATCH_SIZE } from "./config";
 const { ethers } = require('ethers');
 
 /**
+ * 安全构造 BigNumber：禁止把「等于 MAX_SAFE_INTEGER 的 JS number」直接交给 BigNumber.from，
+ * 否则 ethers 会抛 NUMERIC_FAULT overflow（formatEther/formatFixed 内部也会 BigNumber.from(value)）。
+ */
+export function safeBigNumberFrom(value: any): any {
+  if (value == null) return ethers.BigNumber.from(0);
+  if (ethers.BigNumber.isBigNumber(value)) return value;
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) return ethers.BigNumber.from(0);
+    return ethers.BigNumber.from(String(Math.trunc(value)));
+  }
+  if (typeof value === 'bigint') return ethers.BigNumber.from(value.toString());
+  if (typeof value === 'string') return ethers.BigNumber.from(value);
+  return ethers.BigNumber.from(value.toString());
+}
+
+/**
  * 将 topic 转换为地址格式
  */
 export function topicToAddress(topic: string): string {
@@ -24,12 +40,14 @@ const BTC_DECIMALS = 8;
  * 将 satoshi 转换为 BTC
  */
 export function formatBtc(satoshi: any): string {
-  if (!satoshi) return '0';
-  const satoshiStr = satoshi.toString();
-  if (satoshiStr === '0') return '0';
+  // 保留 !satoshi 语义，但排除 ethers BigNumber(0)（对象为 truthy，需继续走 safeBigNumberFrom）
+  if (!satoshi && !ethers.BigNumber.isBigNumber(satoshi)) return '0';
+  if (typeof satoshi === 'number' && !Number.isFinite(satoshi)) return '0';
+  if (ethers.BigNumber.isBigNumber(satoshi) && satoshi.isZero()) return '0';
 
-  // 使用 BigNumber 进行精确计算
-  const bn = ethers.BigNumber.from(satoshi);
+  const bn = safeBigNumberFrom(satoshi);
+  if (bn.isZero()) return '0';
+
   const divisor = ethers.BigNumber.from(10).pow(BTC_DECIMALS);
   const intPart = bn.div(divisor);
   const fracPart = bn.mod(divisor);

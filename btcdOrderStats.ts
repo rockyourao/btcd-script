@@ -14,7 +14,7 @@ const { ethers } = require('ethers');
 const fs = require('fs');
 const path = require('path');
 
-import { formatBtc, formatTimestampDisplay, formatWithCommas, getBlockTimestamps, getUnitStartTimestamp, timestampToStr, topicToAddress } from './util';
+import { formatBtc, formatTimestampDisplay, formatWithCommas, getBlockTimestamps, getUnitStartTimestamp, safeBigNumberFrom, timestampToStr, topicToAddress } from './util';
 
 // 从命令行参数解析 network
 function getNetworkFromArgs(): string {
@@ -182,6 +182,20 @@ interface QueryOptions {
 const MULTICALL_BATCH_SIZE = 100;
 
 /**
+ * 将链上 uint256 转为 number。0、type(uint256).max 或超出 JS 安全整数时返回 0，
+ * 避免 ethers BigNumber.toNumber() 对极大值抛出 NUMERIC_FAULT overflow。
+ */
+/** JS 安全整数上界；勿传入 bn.gt(Number.MAX_SAFE_INTEGER)：ethers 内部会对该 number 做 BigNumber.from 并抛 overflow */
+const MAX_JS_SAFE_INT_STR = String(Number.MAX_SAFE_INTEGER);
+
+function uint256ToSafeNumber(bn: import('ethers').BigNumber | undefined): number {
+  if (bn == null || bn.isZero()) return 0;
+  if (bn.eq(ethers.constants.MaxUint256)) return 0;
+  if (bn.gt(MAX_JS_SAFE_INT_STR)) return 0;
+  return bn.toNumber();
+}
+
+/**
  * 使用 Multicall3 批量获取订单详细信息
  * @param collateralByOrderId 可选，orderId(lowerCase) -> collateralRaw，用于在内部计算 useDiscount
  * @param existingOrderDelayedByOrderId 可选，增量同步时保留已有 OrderDelayed 事件，避免被本轮 multicall 覆盖
@@ -282,16 +296,16 @@ async function fetchOrderDetailsWithMulticall(
             ? orderInterface.decodeFunctionResult('lenderBtcAddress', lenderBtcAddressResult.returnData)[0]
             : '';
           const createTime = createTimeResult.success
-            ? orderInterface.decodeFunctionResult('createTime', createTimeResult.returnData)[0].toNumber()
+            ? uint256ToSafeNumber(orderInterface.decodeFunctionResult('createTime', createTimeResult.returnData)[0])
             : 0;
           const takenTime = takenTimeResult.success
-            ? orderInterface.decodeFunctionResult('takenTime', takenTimeResult.returnData)[0].toNumber()
+            ? uint256ToSafeNumber(orderInterface.decodeFunctionResult('takenTime', takenTimeResult.returnData)[0])
             : 0;
           const borrowedTime = borrowedTimeResult.success
-            ? orderInterface.decodeFunctionResult('borrowedTime', borrowedTimeResult.returnData)[0].toNumber()
+            ? uint256ToSafeNumber(orderInterface.decodeFunctionResult('borrowedTime', borrowedTimeResult.returnData)[0])
             : 0;
           const borrowerRepaidTime = borrowerRepaidTimeResult.success
-            ? orderInterface.decodeFunctionResult('borrowerRepaidTime', borrowerRepaidTimeResult.returnData)[0].toNumber()
+            ? uint256ToSafeNumber(orderInterface.decodeFunctionResult('borrowerRepaidTime', borrowerRepaidTimeResult.returnData)[0])
             : 0;
           const orderVersion = orderVersionResult.success
             ? Number(orderInterface.decodeFunctionResult('orderVersion', orderVersionResult.returnData)[0])
@@ -303,12 +317,13 @@ async function fetchOrderDetailsWithMulticall(
             ? orderInterface.decodeFunctionResult('timeoutRepayerBtcAddress', timeoutRepayerBtcAddressResult.returnData)[0]
             : '';
           const timeoutRepayTime = timeoutRepayTimeResult.success
-            ? orderInterface.decodeFunctionResult('timeoutRepayTime', timeoutRepayTimeResult.returnData)[0].toNumber()
+            ? uint256ToSafeNumber(orderInterface.decodeFunctionResult('timeoutRepayTime', timeoutRepayTimeResult.returnData)[0])
             : 0;
           let interestValue = '0';
           let interestValueRaw = '0';
           if (interestValueResult.success) {
-            const ivBn = orderInterface.decodeFunctionResult('interestValue', interestValueResult.returnData)[0];
+            const ivRaw = orderInterface.decodeFunctionResult('interestValue', interestValueResult.returnData)[0];
+            const ivBn = safeBigNumberFrom(ivRaw);
             interestValueRaw = ivBn.toString();
             interestValue = ethers.utils.formatEther(ivBn);
           }
@@ -324,11 +339,11 @@ async function fetchOrderDetailsWithMulticall(
           if (deadLinesDataResult.success) {
             const decoded = orderInterface.decodeFunctionResult('deadLinesData', deadLinesDataResult.returnData);
             deadLinesData = {
-              orderDeadLine: decoded.orderDeadLine.toNumber(),
-              submitPledgeProofDeadLine: decoded.submitPledgeProofDeadLine.toNumber(),
-              borrowDeadLine: decoded.borrowDeadLine.toNumber(),
-              repayDeadLine: decoded.repayDeadLine.toNumber(),
-              submitRegularProofDeadLine: decoded.submitRegularProofDeadLine.toNumber()
+              orderDeadLine: uint256ToSafeNumber(decoded.orderDeadLine),
+              submitPledgeProofDeadLine: uint256ToSafeNumber(decoded.submitPledgeProofDeadLine),
+              borrowDeadLine: uint256ToSafeNumber(decoded.borrowDeadLine),
+              repayDeadLine: uint256ToSafeNumber(decoded.repayDeadLine),
+              submitRegularProofDeadLine: uint256ToSafeNumber(decoded.submitRegularProofDeadLine)
             };
           }
 
@@ -341,14 +356,14 @@ async function fetchOrderDetailsWithMulticall(
               const decoded = orderInterface.decodeFunctionResult('toLenderBtcTx', toLenderBtcTxResult.returnData);
               realBtcAmountRaw = decoded.amount.toString();
               realBtcAmount = formatBtc(decoded.amount);
-              proofTimestamp = decoded.proofTimestamp?.toNumber?.() ?? 0;
+              proofTimestamp = uint256ToSafeNumber(decoded.proofTimestamp);
             } catch {
               // 解码失败，保持默认值
             }
           }
 
           const limitedDays = limitedDaysResult.success
-            ? orderInterface.decodeFunctionResult('limitedDays', limitedDaysResult.returnData)[0].toNumber()
+            ? uint256ToSafeNumber(orderInterface.decodeFunctionResult('limitedDays', limitedDaysResult.returnData)[0])
             : 0;
 
           // 订单实际时长（天）= borrowerRepaidTime - borrowedTime，未还款则为 0
@@ -907,6 +922,8 @@ interface DerivedOrderLists {
   repurchasableOrders: OrderRecord[];
   timeoutRepaymentOrders: OrderRecord[];
   validOrdersList: OrderRecord[];
+  /** borrowedTime 为 0 或未定义（含无 details）视为未实际借款 */
+  invalidOrdersList: OrderRecord[];
   discountOrdersList: OrderRecord[];
   takenOrdersList: OrderRecord[];
   btcdRepaidOrdersList: OrderRecord[];
@@ -954,6 +971,7 @@ function computeDerivedOrderLists(allRecords: OrderRecord[], nowTimestamp: numbe
     r.details?.deadLinesData?.repayDeadLine < nowTimestamp
   );
   const validOrdersList = allRecords.filter(r => r.details?.borrowedTime > 0);
+  const invalidOrdersList = allRecords.filter(r => (r.details?.borrowedTime ?? 0) === 0);
   const discountOrdersList = validOrdersList.filter(r => r.details?.useDiscount === true);
   const takenOrdersList = allRecords.filter(r => r.details?.takenTime > 0);
   const btcdRepaidOrdersList = allRecords.filter(r => r.details?.borrowerRepaidTime > 0);
@@ -989,6 +1007,7 @@ function computeDerivedOrderLists(allRecords: OrderRecord[], nowTimestamp: numbe
     overdueOrders,
     alloverdueOrders,
     validOrdersList,
+    invalidOrdersList,
     repurchasableOrders,
     timeoutRepaymentOrders,
     discountOrdersList,
@@ -1066,6 +1085,7 @@ function buildOrderStats(
     repurchasableOrders,
     timeoutRepaymentOrders,
     validOrdersList,
+    invalidOrdersList,
     takenOrdersList,
     btcdRepaidOrdersList,
     discountOrdersList,
@@ -1088,6 +1108,10 @@ function buildOrderStats(
   return {
     totalOrders: allRecords.length,
     validOrders: validOrdersList.length,
+    invalidOrderStats: {
+      count: invalidOrdersList.length,
+      tokenAmount: invalidOrdersList.reduce((sum, r) => sum + parseFloat(r.tokenAmount || '0'), 0)
+    },
     limitedDays180Count: validOrdersList.filter(r => r.details?.limitedDays === 180).length,
     limitedDays180AfterStart,
     takenOrders: takenOrdersList.length,
@@ -1474,8 +1498,8 @@ async function main() {
   //   `);
   // });
 
-  console.log(`\n===== 已借出订单质押 BTC 排行 Top10 =====`);
-  const borrowedCollateralRankTop10 = allRecords.filter(r => r.details?.status === OrderStatus.BORROWED).sort((a, b) => parseFloat(b.details?.realBtcAmount) - parseFloat(a.details?.realBtcAmount)).slice(0, 10);
+  console.log(`\n===== 已借出订单质押 BTC 排行 Top30 =====`);
+  const borrowedCollateralRankTop10 = allRecords.filter(r => r.details?.status === OrderStatus.BORROWED).sort((a, b) => parseFloat(b.details?.realBtcAmount) - parseFloat(a.details?.realBtcAmount)).slice(0, 30);
   borrowedCollateralRankTop10.forEach((item, i) => {
     console.log(`  ${i + 1}. 订单ID: ${item.orderId}, 质押BTC: ${formatWithCommas(item.details?.realBtcAmount, 2)} BTC, ${formatWithCommas(item.tokenAmount, 2)} BTCD, BTC地址: ${item.details?.borrowerBtcAddress}
     订单BTC地址: ${item.details?.lenderBtcAddress} EVM地址: ${item.details?.borrower}
@@ -1522,6 +1546,9 @@ async function main() {
   console.log(`已接单订单数: ${formatWithCommas(stats.takenOrders, 0)} (${takenOrdersPercent}%)`);
   const validOrdersPercent = stats.totalOrders > 0 ? ((stats.validOrders / stats.totalOrders) * 100).toFixed(2) : '0.00';
   console.log(`有效订单数: ${formatWithCommas(stats.validOrders, 0)} (${validOrdersPercent}%)`);
+  const invalidOrdersPercent = stats.totalOrders > 0 ? ((stats.invalidOrderStats.count / stats.totalOrders) * 100).toFixed(2) : '0.00';
+  console.log(`无效订单数（borrowedTime 为 0 或未定义）: ${formatWithCommas(stats.invalidOrderStats.count, 0)} (${invalidOrdersPercent}%)`);
+  console.log(`无效订单 BTCD 量（订单 tokenAmount 合计）: ${formatWithCommas(stats.invalidOrderStats.tokenAmount, 2)}`);
   const discountOrdersPercent = stats.validOrders > 0 ? ((stats.discountOrders / stats.validOrders) * 100).toFixed(2) : '0.00';
   console.log(`有效订单中 使用Discount订单数: ${formatWithCommas(stats.discountOrders, 0)} (${discountOrdersPercent}%)`);
   console.log(`有效订单中 limitedDays 为 180 天的订单数量: ${formatWithCommas(stats.limitedDays180Count, 0)}`);
@@ -1580,6 +1607,11 @@ async function main() {
   console.log(`\n===== OrderVersion = 2 的订单数量 =====`);
   console.log(`  订单数: ${formatWithCommas(allRecords.filter(r => r.details?.orderVersion === 2).length, 0)}`);
   console.log(`  已关闭订单数: ${formatWithCommas(allRecords.filter(r => r.details?.orderVersion === 2 && r.details?.status === OrderStatus.CLOSED).length, 0)}`);
+
+  // OrderVersion = 3
+  console.log(`\n===== OrderVersion = 3 的订单数量 =====`);
+  console.log(`  订单数: ${formatWithCommas(allRecords.filter(r => r.details?.orderVersion === 3).length, 0)}`);
+  console.log(`  已关闭订单数: ${formatWithCommas(allRecords.filter(r => r.details?.orderVersion === 3 && r.details?.status === OrderStatus.CLOSED).length, 0)}`);
 
   // 显示超时还款订单统计
   console.log(`\n===== 超时还款订单统计 =====`);
