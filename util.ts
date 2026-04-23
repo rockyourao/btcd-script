@@ -191,14 +191,15 @@ export async function getBlockTimestamps(blockNumbers: number[], rpcUrl: string)
   return blockTimestamps;
 }
 
+const BALANCE_BATCH_SIZE = 1000;
 /**
- * 批量 eth_getBalance（与 getBlockTimestamps 相同：单 POST 多请求，按 TIMESTAMP_BATCH_SIZE 分片）
+ * 批量 eth_getBalance（与 getBlockTimestamps 相同：单 POST 多请求，按 BALANCE_BATCH_SIZE 分片）
  */
 export async function getNativeBalancesBatch(addresses: string[], rpcUrl: string): Promise<Map<string, any>> {
   const balances = new Map<string, any>();
 
-  for (let i = 0; i < addresses.length; i += TIMESTAMP_BATCH_SIZE) {
-    const batch = addresses.slice(i, i + TIMESTAMP_BATCH_SIZE);
+  for (let i = 0; i < addresses.length; i += BALANCE_BATCH_SIZE) {
+    const batch = addresses.slice(i, i + BALANCE_BATCH_SIZE);
 
     try {
       const batchRequest = batch.map((addr: string, idx: number) => ({
@@ -226,6 +227,11 @@ export async function getNativeBalancesBatch(addresses: string[], rpcUrl: string
           balances.set(addr.toLowerCase(), ethers.BigNumber.from(result.result));
         }
       }
+
+      const progress = Math.min(i + BALANCE_BATCH_SIZE, addresses.length);
+      const pct = addresses.length > 0 ? ((progress / addresses.length) * 100).toFixed(1) : '0.0';
+      console.log(`eth_getBalance 进度: ${progress}/${addresses.length} (${pct}%)`);
+
     } catch (error) {
       console.error(`批量 eth_getBalance 失败:`, error);
     }
