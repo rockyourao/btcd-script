@@ -1122,18 +1122,25 @@ function buildOrderStats(
   };
 
   const totalInterestValue = btcdRepaidOrdersList.reduce((sum, r) => sum + effectiveInterestOf(r), 0);
-  /** NBW 分成：v1/v2 为利息的 30%；v3 借出时已付 NBW，已还与待还均不计入 */
-  const totalInterestToNBW = btcdRepaidOrdersList.reduce((sum, r) => {
-    if (orderVersionOf(r) === 3) return sum;
-    return sum + interestOf(r) * 0.3;
-  }, 0);
 
-  const totalOutstandingInterestValue = borrowedOrders.reduce((sum, r) => sum + effectiveInterestOf(r), 0);
-  const outstandingInterestBorrowedV1V2 = borrowedOrders
+  const orderVersion3ValidOrders = validOrdersList.filter(r => orderVersionOf(r) === 3);
+  const orderVersion3TotalInterestValue = orderVersion3ValidOrders.reduce((sum, r) => sum + effectiveInterestOf(r), 0);
+  /** v3：总利息中应付 PG = 有效利息(含延期加计) * (6/7) * 70% */
+  const V3_INTEREST_PG_SHARE = (6 / 7) * 0.7;
+  const orderVersion3InterestShareToPG = orderVersion3TotalInterestValue * V3_INTEREST_PG_SHARE;
+
+  /**
+   * NBW：v1/v2 仅统计已还款订单，链上利息×30%；v3 为全部有效订单有效利息合计（借出时已全额付给 NBW，与 orderVersion3TotalInterestValue 一致，不在已还款列表中重复加计）
+   */
+  const totalInterestToNBW =
+    btcdRepaidOrdersList.reduce((sum, r) => {
+      if (orderVersionOf(r) === 3) return sum;
+      return sum + interestOf(r) * 0.3;
+    }, 0) + orderVersion3TotalInterestValue;
+
+  /** 待收仅 v1/v2：v3 借出时利息已结，不列入待收 */
+  const totalOutstandingInterestValue = borrowedOrders
     .filter(r => orderVersionOf(r) !== 3)
-    .reduce((sum, r) => sum + interestOf(r), 0);
-  const outstandingInterestBorrowedV3 = borrowedOrders
-    .filter(r => orderVersionOf(r) === 3)
     .reduce((sum, r) => sum + effectiveInterestOf(r), 0);
   const totalOutstandingInterestToNBW = borrowedOrders.reduce((sum, r) => {
     if (orderVersionOf(r) === 3) return sum;
@@ -1147,12 +1154,6 @@ function buildOrderStats(
       return v !== 2 && v !== 3;
     })
     .reduce((sum, r) => sum + interestOf(r), 0) / 6;
-
-  const orderVersion3ValidOrders = validOrdersList.filter(r => orderVersionOf(r) === 3);
-  const orderVersion3TotalInterestValue = orderVersion3ValidOrders.reduce((sum, r) => sum + effectiveInterestOf(r), 0);
-  /** v3：总利息中应付 PG = 有效利息(含延期加计) * (6/7) * 70% */
-  const V3_INTEREST_PG_SHARE = (6 / 7) * 0.7;
-  const orderVersion3InterestShareToPG = orderVersion3TotalInterestValue * V3_INTEREST_PG_SHARE;
 
   return {
     totalOrders: allRecords.length,
@@ -1174,9 +1175,6 @@ function buildOrderStats(
     totalInterestValue: totalInterestValue,
     totalInterestToNBW,
     totalOutstandingInterestValue,
-    /** 待还利息按版本拆分（v1/v2 链上值；v3 为 7% 口径且含 OrderDelayed 加计，合计等于 totalOutstandingInterestValue） */
-    outstandingInterestBorrowedV1V2,
-    outstandingInterestBorrowedV3,
     totalOutstandingInterestToNBW,
     orderVersion3TotalInterestValue,
     orderVersion3InterestShareToPG,
@@ -1624,10 +1622,8 @@ async function main() {
 
   console.log(`\n===== 利息总额 （BTCD）=====`);
   console.log(`已收到的利息总额（v3 含 OrderDelayed 加计: interest×(1+延期次数)）: ${formatWithCommas(stats.totalInterestValue, 2)}`);
-  console.log(`NBW已收到的利息分成 (v1/v2 按利息30%；v3 借出时已付不计): ${formatWithCommas(stats.totalInterestToNBW, 2)}`);
-  console.log(`待收到的利息总额（未还款；v3 含延期加计）: ${formatWithCommas(stats.totalOutstandingInterestValue, 2)}`);
-  console.log(`  其中 v1/v2 待还利息(链上值，6%口径): ${formatWithCommas(stats.outstandingInterestBorrowedV1V2, 2)}`);
-  console.log(`  其中 v3 待还利息(7%口径+延期加计): ${formatWithCommas(stats.outstandingInterestBorrowedV3, 2)}`);
+  console.log(`NBW已收到的利息分成 (v1/v2 已还款×链上利息×30%；v3 为全部有效订单利息): ${formatWithCommas(stats.totalInterestToNBW, 2)}`);
+  console.log(`待收到的利息总额（未还款，仅 v1/v2；v3 借出时已收息不计）: ${formatWithCommas(stats.totalOutstandingInterestValue, 2)}`);
   console.log(`NBW待收到的利息分成（未还款，仅 v1/v2×30%；v3 为 0）: ${formatWithCommas(stats.totalOutstandingInterestToNBW, 2)}`);
   console.log(`期权费用总额（仅 v1/旧版：利息×1/6；v2/v3 不计）: ${formatWithCommas(stats.totalOptionCost, 2)}`);
   console.log(`orderVersion=3 有效订单利息总额（含延期支付的利息）: ${formatWithCommas(stats.orderVersion3TotalInterestValue, 2)}`);
