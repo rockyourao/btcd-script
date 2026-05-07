@@ -5,7 +5,7 @@
  * npx ts-node btcdOrderStats.ts                     # 获取所有订单 (默认 pgp-prod)
  * npx ts-node btcdOrderStats.ts --network pgp-prod  # 指定网络
  * npx ts-node btcdOrderStats.ts --limit 50          # 获取最新 50 条
- * npx ts-node btcdOrderStats.ts --orderType 0       # 按订单类型过滤
+ * npx ts-node btcdOrderStats.ts --orderType 0       # 按订单类型过滤 (0 BORROW / 1 LENDING / 2 OBSIDIAN_ORDER)
  * npx ts-node btcdOrderStats.ts --no-update         # 不更新订单，仅用已有数据统计 (默认 true 会更新)
  */
 
@@ -60,10 +60,24 @@ const ORDER_DELAYED_TOPIC = ethers.utils.id('OrderDelayed(bytes32)');
 /** topic0 OR：一次 getLogs 同时拉 OrderClosed + OrderDelayed（仅用于订单合约日志） */
 const ORDER_CLOSED_OR_DELAYED_TOPICS = [ORDER_CLOSED_TOPIC, ORDER_DELAYED_TOPIC];
 
-// 订单类型枚举
+// 订单类型枚举（与链上 OrderType 一致：BORROW, LENDING, OBSIDIAN_ORDER）
 enum OrderType {
   Borrow = 0,
-  Lend = 1
+  Lending = 1,
+  ObsidianOrder = 2
+}
+
+function getOrderTypeName(orderType: number): string {
+  switch (orderType) {
+    case OrderType.Borrow:
+      return 'BORROW';
+    case OrderType.Lending:
+      return 'LENDING';
+    case OrderType.ObsidianOrder:
+      return 'OBSIDIAN_ORDER';
+    default:
+      return `UNKNOWN(${orderType})`;
+  }
 }
 
 // 订单状态枚举
@@ -97,7 +111,7 @@ const OrderStatusNames: { [key: number]: string } = {
 
 interface OrderRecord {
   orderId: string;         // 订单地址
-  orderType: number;       // 订单类型 (0: Borrow, 1: Lend)
+  orderType: number;       // 订单类型 (0: BORROW, 1: LENDING, 2: OBSIDIAN_ORDER)
   orderTypeName: string;   // 订单类型名称
   collateral: string;      // 抵押品数量
   collateralRaw: string;   // 抵押品原始值
@@ -645,7 +659,7 @@ function parseOrderLogs(logs: any[], blockTimestamps: Map<number, number>): Orde
     return {
       orderId,
       orderType,
-      orderTypeName: orderType === OrderType.Borrow ? 'Borrow' : 'Lend',
+      orderTypeName: getOrderTypeName(orderType),
       collateral: formatBtc(decoded.collateral),  // BTC 使用 8 位小数
       collateralRaw: decoded.collateral.toString(),
       token: decoded.token,
@@ -695,7 +709,7 @@ async function getOrderCreatedLogs(
   console.log(`🔍从区块 ${startBlock} 到 ${endBlock} 搜索...`);
 
   if (orderType !== undefined) {
-    console.log(`过滤订单类型: ${orderType} (${orderType === 0 ? 'Borrow' : 'Lend'})`);
+    console.log(`过滤订单类型: ${orderType} (${getOrderTypeName(orderType)})`);
   }
 
   const allLogs: any[] = [];
@@ -1129,6 +1143,17 @@ function buildOrderStats(
   const V3_INTEREST_PG_SHARE = (6 / 7) * 0.7;
   const orderVersion3InterestShareToPG = orderVersion3TotalInterestValue * V3_INTEREST_PG_SHARE;
 
+  /** 有效订单（已借款）中 OBSIDIAN_ORDER */
+  const obsidianOrderV3Valid = validOrdersList.filter(
+    r => r.orderType === OrderType.ObsidianOrder
+  );
+  const obsidianOrderV3 = {
+    count: obsidianOrderV3Valid.length,
+    totalTokenAmount: obsidianOrderV3Valid.reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0),
+    totalCollateralBtc: obsidianOrderV3Valid.reduce((sum, r) => sum + parseFloat(r.details?.realBtcAmount || '0'), 0),
+    totalEffectiveInterest: obsidianOrderV3Valid.reduce((sum, r) => sum + effectiveInterestOf(r), 0)
+  };
+
   /**
    * NBW：v1/v2 仅统计已还款订单，链上利息×30%；v3 为全部有效订单有效利息合计（借出时已全额付给 NBW，与 orderVersion3TotalInterestValue 一致，不在已还款列表中重复加计）
    */
@@ -1167,7 +1192,8 @@ function buildOrderStats(
     takenOrders: takenOrdersList.length,
     discountOrders: discountOrdersList.length,
     borrowOrders: borrowedOrders.length,
-    lendOrders: allRecords.filter(r => r.orderType === OrderType.Lend).length,
+    lendOrders: allRecords.filter(r => r.orderType === OrderType.Lending).length,
+    obsidianOrders: allRecords.filter(r => r.orderType === OrderType.ObsidianOrder).length,
     totalCollateral: allRecords.filter(r => r.details?.borrowedTime > 0).reduce((sum, r) => sum + parseFloat(r.details.realBtcAmount), 0),
     totalCollateralDiscount: allRecords.filter(r => r.details?.borrowedTime > 0).reduce((sum, r) => sum + parseFloat(r.collateral), 0),
     totalTokenAmount: allRecords.filter(r => r.details?.borrowedTime > 0).reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0),
@@ -1178,6 +1204,7 @@ function buildOrderStats(
     totalOutstandingInterestToNBW,
     orderVersion3TotalInterestValue,
     orderVersion3InterestShareToPG,
+    obsidianOrderV3,
     activeTokenAmount: allRecords.filter(r => r.details?.status !== OrderStatus.CLOSED).reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0),
     currentMintedBTCD: allRecords.filter(r => r.details?.status !== OrderStatus.CLOSED).reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0) +
       liquidatedOrders.reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0),
@@ -1628,6 +1655,12 @@ async function main() {
   console.log(`期权费用总额（仅 v1/旧版：利息×1/6；v2/v3 不计）: ${formatWithCommas(stats.totalOptionCost, 2)}`);
   console.log(`orderVersion=3 有效订单利息总额（含延期支付的利息）: ${formatWithCommas(stats.orderVersion3TotalInterestValue, 2)}`);
   console.log(`orderVersion=3 利息中应付给 PG (有效利息×6/7×70%): ${formatWithCommas(stats.orderVersion3InterestShareToPG, 2)}`);
+  console.log(
+    `有效订单中 OBSIDIAN_ORDER & orderVersion=3 — 订单数: ${formatWithCommas(stats.obsidianOrderV3.count, 0)}；` +
+      `总铸造 BTCD: ${formatWithCommas(stats.obsidianOrderV3.totalTokenAmount, 2)}；` +
+      `总质押 BTC: ${formatWithCommas(stats.obsidianOrderV3.totalCollateralBtc, 8)} BTC；` +
+      `有效利息合计（含延期加计）: ${formatWithCommas(stats.obsidianOrderV3.totalEffectiveInterest, 2)}`
+  );
 
   if (stats.firstOrderTime) {
     console.log(`\n时间范围:`);
