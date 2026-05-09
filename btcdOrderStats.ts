@@ -93,6 +93,7 @@ enum OrderStatus {
   ARBITRATION_REQUESTED = 8,          // 已请求仲裁
   CLOSED = 9,                         // 已关闭（最终状态）
   TIMEOUT_REPAYMENT = 10,             // 超时还款（最终状态）
+  RENEWAL_ORDER_REQUESTED = 11,       // 续期订单已请求
 }
 
 // 订单状态名称映射
@@ -1144,14 +1145,14 @@ function buildOrderStats(
   const orderVersion3InterestShareToPG = orderVersion3TotalInterestValue * V3_INTEREST_PG_SHARE;
 
   /** 有效订单（已借款）中 OBSIDIAN_ORDER */
-  const obsidianOrderV3Valid = validOrdersList.filter(
+  const obsidianOrderValid = validOrdersList.filter(
     r => r.orderType === OrderType.ObsidianOrder
   );
-  const obsidianOrderV3 = {
-    count: obsidianOrderV3Valid.length,
-    totalTokenAmount: obsidianOrderV3Valid.reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0),
-    totalCollateralBtc: obsidianOrderV3Valid.reduce((sum, r) => sum + parseFloat(r.details?.realBtcAmount || '0'), 0),
-    totalEffectiveInterest: obsidianOrderV3Valid.reduce((sum, r) => sum + effectiveInterestOf(r), 0)
+  const obsidianOrder = {
+    count: obsidianOrderValid.length,
+    totalTokenAmount: obsidianOrderValid.reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0),
+    totalCollateralBtc: obsidianOrderValid.reduce((sum, r) => sum + parseFloat(r.details?.realBtcAmount || '0'), 0),
+    totalEffectiveInterest: obsidianOrderValid.reduce((sum, r) => sum + effectiveInterestOf(r), 0)
   };
 
   /**
@@ -1204,7 +1205,7 @@ function buildOrderStats(
     totalOutstandingInterestToNBW,
     orderVersion3TotalInterestValue,
     orderVersion3InterestShareToPG,
-    obsidianOrderV3,
+    obsidianOrder,
     activeTokenAmount: allRecords.filter(r => r.details?.status !== OrderStatus.CLOSED).reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0),
     currentMintedBTCD: allRecords.filter(r => r.details?.status !== OrderStatus.CLOSED).reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0) +
       liquidatedOrders.reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0),
@@ -1263,6 +1264,7 @@ function buildOrderStats(
       arbitrationRequested: allRecords.filter(r => r.details?.status === OrderStatus.ARBITRATION_REQUESTED).length,
       closed: allRecords.filter(r => r.details?.status === OrderStatus.CLOSED).length,
       timeoutRepayment: allRecords.filter(r => r.details?.status === OrderStatus.TIMEOUT_REPAYMENT).length,
+      renewalOrderRequested: allRecords.filter(r => r.details?.status === OrderStatus.RENEWAL_ORDER_REQUESTED).length,
       liquidated: liquidatedOrders.length
     }
   };
@@ -1656,10 +1658,10 @@ async function main() {
   console.log(`orderVersion=3 有效订单利息总额（含延期支付的利息）: ${formatWithCommas(stats.orderVersion3TotalInterestValue, 2)}`);
   console.log(`orderVersion=3 利息中应付给 PG (有效利息×6/7×70%): ${formatWithCommas(stats.orderVersion3InterestShareToPG, 2)}`);
   console.log(
-    `有效订单中 OBSIDIAN_ORDER & orderVersion=3 — 订单数: ${formatWithCommas(stats.obsidianOrderV3.count, 0)}；` +
-      `总铸造 BTCD: ${formatWithCommas(stats.obsidianOrderV3.totalTokenAmount, 2)}；` +
-      `总质押 BTC: ${formatWithCommas(stats.obsidianOrderV3.totalCollateralBtc, 8)} BTC；` +
-      `有效利息合计（含延期加计）: ${formatWithCommas(stats.obsidianOrderV3.totalEffectiveInterest, 2)}`
+    `有效订单中 OBSIDIAN_ORDER 订单数: ${formatWithCommas(stats.obsidianOrder.count, 0)}；` +
+      `总铸造 BTCD: ${formatWithCommas(stats.obsidianOrder.totalTokenAmount, 2)}；` +
+      `总质押 BTC: ${formatWithCommas(stats.obsidianOrder.totalCollateralBtc, 8)} BTC；` +
+      `有效利息合计（含延期加计）: ${formatWithCommas(stats.obsidianOrder.totalEffectiveInterest, 2)}`
   );
 
   if (stats.firstOrderTime) {
@@ -1723,6 +1725,7 @@ async function main() {
   console.log(`  CLOSED (已关闭): ${formatWithCommas(stats.statusStats.closed, 0)}`);
   console.log(`  LIQUIDATED (已清算): ${formatWithCommas(stats.statusStats.liquidated, 0)}`);
   console.log(`  TIMEOUT_REPAYMENT (超时还款): ${formatWithCommas(stats.statusStats.timeoutRepayment, 0)}`);
+  console.log(`  RENEWAL_ORDER_REQUESTED (已请求续期): ${formatWithCommas(stats.statusStats.renewalOrderRequested, 0)}`);
 
 
   // const repaidOrderIDs = new Set(repaidOrders.map(r => r.orderId));
