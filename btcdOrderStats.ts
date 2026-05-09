@@ -1606,6 +1606,32 @@ async function main() {
     console.log(`  ${i + 1}. ${item[0]} 质押BTC: ${formatWithCommas(item[1], 2)} BTC`);
   });
 
+  console.log(`\n===== 最近还款订单 =====`)
+  const btcdRepaidOrdersList = allRecords.filter(r => r.details?.borrowerRepaidTime > 0).sort((a, b) => b.details?.borrowerRepaidTime - a.details?.borrowerRepaidTime);
+  const btcdRepaidOrdersTop10 = btcdRepaidOrdersList.slice(0, 10);
+  btcdRepaidOrdersTop10.forEach((item, i) => {
+    console.log(`  ${i + 1}. ${item.orderId} 还款时间: ${item.details?.borrowerRepaidTimeStr}, BTCD数量: ${formatWithCommas(item.tokenAmount, 2)}`);
+  });
+
+  console.log(`\n===== 最近逾期订单 =====`)
+  const overdueOrders = allRecords.filter(r =>
+    r.details?.status === OrderStatus.BORROWED &&
+    r.details?.deadLinesData?.repayDeadLine > 0 &&
+    r.details?.deadLinesData?.repayDeadLine < nowTimestamp &&
+    !r.details?.borrowerRepaidTime
+  ).sort((a, b) => b.details?.deadLinesData?.repayDeadLine - a.details?.deadLinesData?.repayDeadLine);
+  const overdueOrdersTop10 = overdueOrders.slice(0, 10);
+  overdueOrdersTop10.forEach((item, i) => {
+    console.log(`  ${i + 1}. ${item.orderId} 还款时间: ${timestampToStr(item.details?.deadLinesData?.repayDeadLine)}, BTCD数量: ${formatWithCommas(item.tokenAmount, 2)}`);
+  });
+
+  console.log(`\n===== 最近将要逾期的订单 =====`)
+  const toOverdueOrdersList = allRecords.filter(r => r.details?.status === OrderStatus.BORROWED && r.details?.deadLinesData?.repayDeadLine > nowTimestamp).sort((a, b) => a.details?.deadLinesData?.repayDeadLine - b.details?.deadLinesData?.repayDeadLine);
+  const toOverdueOrdersTop20 = toOverdueOrdersList.slice(0, 20);
+  toOverdueOrdersTop20.forEach((item, i) => {
+    console.log(`  ${i + 1}. ${item.orderId} 还款时间: ${timestampToStr(item.details?.deadLinesData?.repayDeadLine)}, BTCD数量: ${formatWithCommas(item.tokenAmount, 2)}`);
+  });
+
   // 列出所有过期订单中，关闭时间小于订单的proofTimestamp+limitedDays*86400的订单
   // TODO:实际应该是质押btc交易时间+loktime1，为了简化，这里暂时使用proofTimestamp+limitedDays*86400
   console.log("\n⚠️  提前关闭的订单ID:")

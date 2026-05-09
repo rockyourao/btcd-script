@@ -65,7 +65,17 @@ export function formatBtc(satoshi: any): string {
  */
 export function timestampToStr(timestamp: number): string {
   if (!timestamp || timestamp === 0) return '';
-  return new Date(timestamp * 1000).toISOString();
+  // return new Date(timestamp * 1000).toISOString();
+  const options: Intl.DateTimeFormatOptions = {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false // 强制使用24小时制
+  };
+  return new Date(timestamp * 1000).toLocaleString('zh-CN', options);
 }
 
 /**
