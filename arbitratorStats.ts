@@ -26,7 +26,7 @@ function getNetworkFromArgs(): string {
 }
 
 const network = getNetworkFromArgs();
-const networkConfig = require('./network.json') as Record<string, Record<string, unknown>>;
+const networkConfig = require('./networks.json') as Record<string, Record<string, unknown>>;
 const cfg = networkConfig[network];
 if (!cfg) {
   console.error(`未知网络: ${network}`);
@@ -39,7 +39,7 @@ const BATCH_SIZE = (cfg.batch_size as number) || 50000;
 const RPC_URL = cfg.rpc_url as string;
 
 if (!ARBITRATOR_MANAGER) {
-  console.error(`network.json 中 [${network}] 未配置 arbitratorManager，无法继续。`);
+  console.error(`networks.json 中 [${network}] 未配置 arbitratorManager，无法继续。`);
   process.exit(1);
 }
 

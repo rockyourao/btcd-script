@@ -29,8 +29,8 @@ function getNetworkFromArgs(): string {
 
 const network = getNetworkFromArgs();
 
-// 从 network.json 加载配置
-const networkConfig = require('./network.json');
+// 从 networks.json 加载配置
+const networkConfig = require('./networks.json');
 const LOAN_CONTRACT_ADDRESS = networkConfig[network].loan_contractaddress;
 const MULTICALL3_ADDRESS = networkConfig[network].multicall3;
 const INITIAL_START_BLOCK = networkConfig[network].start_block;
@@ -1629,7 +1629,7 @@ async function main() {
   const toOverdueOrdersList = allRecords.filter(r => r.details?.status === OrderStatus.BORROWED && r.details?.deadLinesData?.repayDeadLine > nowTimestamp).sort((a, b) => a.details?.deadLinesData?.repayDeadLine - b.details?.deadLinesData?.repayDeadLine);
   const toOverdueOrdersTop20 = toOverdueOrdersList.slice(0, 20);
   toOverdueOrdersTop20.forEach((item, i) => {
-    console.log(`  ${i + 1}. ${item.orderId} 还款时间: ${timestampToStr(item.details?.deadLinesData?.repayDeadLine)}, BTCD数量: ${formatWithCommas(item.tokenAmount, 2)}`);
+    console.log(`  ${i + 1}. ${item.orderId} 还款时间: ${timestampToStr(item.details?.deadLinesData?.repayDeadLine)}, BTCD数量: ${formatWithCommas(item.tokenAmount, 2)} 版本: ${item.details?.orderVersion}`);
   });
 
   // 列出所有过期订单中，关闭时间小于订单的proofTimestamp+limitedDays*86400的订单
@@ -1749,9 +1749,9 @@ async function main() {
   console.log(`  LENDER_PAYMENT_CONFIRMED (出借人付款已确认): ${formatWithCommas(stats.statusStats.lenderPaymentConfirmed, 0)}`);
   console.log(`  ARBITRATION_REQUESTED (已请求仲裁): ${formatWithCommas(stats.statusStats.arbitrationRequested, 0)}`);
   console.log(`  CLOSED (已关闭): ${formatWithCommas(stats.statusStats.closed, 0)}`);
-  console.log(`  LIQUIDATED (已清算): ${formatWithCommas(stats.statusStats.liquidated, 0)}`);
   console.log(`  TIMEOUT_REPAYMENT (超时还款): ${formatWithCommas(stats.statusStats.timeoutRepayment, 0)}`);
   console.log(`  RENEWAL_ORDER_REQUESTED (已请求续期): ${formatWithCommas(stats.statusStats.renewalOrderRequested, 0)}`);
+  console.log(`  LIQUIDATED (已清算): ${formatWithCommas(stats.statusStats.liquidated, 0)}`);
 
 
   // const repaidOrderIDs = new Set(repaidOrders.map(r => r.orderId));

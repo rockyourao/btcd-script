@@ -34,8 +34,8 @@ function getNetworkFromArgs(): string {
 
 const network = getNetworkFromArgs();
 
-// 从 network.json 加载配置
-const networkConfig = require('./network.json');
+// 从 networks.json 加载配置
+const networkConfig = require('./networks.json');
 const INITIAL_START_BLOCK = networkConfig[network].start_block;
 const BATCH_SIZE = networkConfig[network].batch_size;
 const RPC_URL = networkConfig[network].rpc_url;

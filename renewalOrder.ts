@@ -93,7 +93,7 @@ async function main(): Promise<void> {
   const network = getNetworkFromArgs();
   const orderArg = getOrderFromArgs();
 
-  const networkConfig = require('./network.json');
+  const networkConfig = require('./networks.json');
   const config = networkConfig[network];
   if (!config) {
     console.error(`未知网络: ${network}`);

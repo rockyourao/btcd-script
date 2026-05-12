@@ -35,7 +35,7 @@ npm install
 | `eco-prod` | https://api.elastos.cc/eco | Elastos ECO 网络 (主网) |
 | `pgp-prod` | https://api.elastos.io/pgp | Elastos PGP 网络 (主网) |
 
-网络配置详见 `network.json` 文件。
+网络配置详见 `networks.json` 文件。
 
 ## 🚀 使用方法
 
@@ -193,7 +193,7 @@ btcd-script/
 ├── config.ts                     # 项目配置
 ├── getBTCDTransfers.ts           # BTCD Transfer 事件获取脚本
 ├── getCrossChainLogs.ts          # 跨链日志获取脚本
-├── network.json                  # 网络配置
+├── networks.json                  # 网络配置
 ├── package.json
 └── tsconfig.json
 ```
@@ -211,7 +211,7 @@ export const BLOCKSCOUT_URL = 'https://eco.elastos.io';
 export const TIMESTAMP_BATCH_SIZE = 10000;
 ```
 
-### network.json
+### networks.json
 
 每个网络包含以下配置：
 

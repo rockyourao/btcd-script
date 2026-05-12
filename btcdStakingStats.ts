@@ -26,8 +26,8 @@ function getNetworkFromArgs(): string {
 
 const network = getNetworkFromArgs();
 
-// 从 network.json 加载配置
-const networkConfig = require('./network.json');
+// 从 networks.json 加载配置
+const networkConfig = require('./networks.json');
 const STAKING_FACTORY_ADDRESS = networkConfig[network].staking_factory_address;
 const MULTICALL3_ADDRESS = networkConfig[network].multicall3;
 const INITIAL_START_BLOCK = networkConfig[network].start_block;
