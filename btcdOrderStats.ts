@@ -123,6 +123,7 @@ interface OrderRecord {
   timestamp: number;
   timestampStr: string;
   transactionHash: string;
+  btcPrice: number;
   // 订单详细信息（通过 multicall 获取）
   details?: OrderDetails;
 }
@@ -657,19 +658,26 @@ function parseOrderLogs(logs: any[], blockTimestamps: Map<number, number>): Orde
     // 非 indexed 参数在 data 中解码
     const decoded = iface.decodeEventLog('OrderCreated', log.data, log.topics);
 
+    const tokenAmount = ethers.utils.formatEther(decoded.tokenAmount);
+    const collateral = formatBtc(decoded.collateral); // BTC 使用 8 位小数
+    const tokenAmountNum = parseFloat(tokenAmount);
+    const collateralNum = parseFloat(collateral);
+    const btcPrice = collateralNum > 0 ? tokenAmountNum / 0.65 / collateralNum : NaN;
+
     return {
       orderId,
       orderType,
       orderTypeName: getOrderTypeName(orderType),
-      collateral: formatBtc(decoded.collateral),  // BTC 使用 8 位小数
+      collateral,
       collateralRaw: decoded.collateral.toString(),
       token: decoded.token,
-      tokenAmount: ethers.utils.formatEther(decoded.tokenAmount),
+      tokenAmount,
       tokenAmountRaw: decoded.tokenAmount.toString(),
       blockNumber: log.blockNumber,
       timestamp,
       timestampStr,
-      transactionHash: log.transactionHash
+      transactionHash: log.transactionHash,
+      btcPrice
     };
   });
 }
@@ -1189,6 +1197,7 @@ function buildOrderStats(
       tokenAmount: invalidOrdersList.reduce((sum, r) => sum + parseFloat(r.tokenAmount || '0'), 0)
     },
     limitedDays180Count: validOrdersList.filter(r => r.details?.limitedDays === 180).length,
+    limitedDays360Count: validOrdersList.filter(r => r.details?.limitedDays === 360).length,
     limitedDays180AfterStart,
     takenOrders: takenOrdersList.length,
     discountOrders: discountOrdersList.length,
@@ -1581,6 +1590,7 @@ async function main() {
   borrowedCollateralRankTop10.forEach((item, i) => {
     console.log(`  ${i + 1}. 订单ID: ${item.orderId}, 质押BTC: ${formatWithCommas(item.details?.realBtcAmount, 2)} BTC, ${formatWithCommas(item.tokenAmount, 2)} BTCD, BTC地址: ${item.details?.borrowerBtcAddress}
     订单BTC地址: ${item.details?.lenderBtcAddress} EVM地址: ${item.details?.borrower}
+    BTC 价格: ${formatWithCommas(item.btcPrice, 2)}
     `);
   });
 
@@ -1656,6 +1666,7 @@ async function main() {
   const discountOrdersPercent = stats.validOrders > 0 ? ((stats.discountOrders / stats.validOrders) * 100).toFixed(2) : '0.00';
   console.log(`有效订单中 使用Discount订单数: ${formatWithCommas(stats.discountOrders, 0)} (${discountOrdersPercent}%)`);
   console.log(`有效订单中 limitedDays 为 180 天的订单数量: ${formatWithCommas(stats.limitedDays180Count, 0)}`);
+  console.log(`有效订单中 limitedDays 为 360 天的订单数量: ${formatWithCommas(stats.limitedDays360Count, 0)}`);
   if (stats.limitedDays180AfterStart != null) {
     const s = stats.limitedDays180AfterStart;
     console.log(`创建时间 >= 180天订单起始时间且已借款订单数: ${formatWithCommas(s.total, 0)}，其中 订单期限为180天的订单数量: ${formatWithCommas(s.limitedDays180Count, 0)}，占比: ${s.ratioStr}`);

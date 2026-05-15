@@ -6,6 +6,7 @@
  * npx ts-node arbitratorStats.ts --network pgp-prod
  * npx ts-node arbitratorStats.ts --skip-timestamp
  * npx ts-node arbitratorStats.ts --rescan-events   # 忽略本地进度，从 start_block 全量扫事件
+ * npx ts-node arbitratorStats.ts --no-update       # 不拉链更新，仅用已有 arbitrator_stats.json 统计（默认会更新）
  */
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -47,9 +48,11 @@ const arbitratorManagerAbi = require('./abi/ArbitratorManager.json').abi;
 const multicall3Abi = require('./abi/Multicall3.json').abi;
 
 /** 每轮 Multicall 处理的守护者数量（每人 3 个调用：basicInfo + isActiveArbitrator + getAvailableStake） */
-const MULTICALL_BATCH_SIZE = 200;
+const MULTICALL_BATCH_SIZE = 100;
 /** 低余额阈值（原生币 */
 const LOW_BALANCE_THRESHOLD_ETH = '0.08';
+
+const MIN_DEADLINE_IN_SECONDS = 3600 * 24 * 370; // 360 天 + locktime10天
 
 interface ArbitratorFromEvent {
   arbitrator: string;
@@ -80,18 +83,47 @@ interface ArbitratorRecord extends ArbitratorFromEvent {
   balance: string;
 }
 
-function parseArgs(): { skipTimestamp: boolean; rescanEvents: boolean } {
+function parseArgs(): { skipTimestamp: boolean; rescanEvents: boolean; update: boolean } {
   let skipTimestamp = false;
   let rescanEvents = false;
+  let update = true;
   const args = process.argv.slice(2);
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--skip-timestamp') {
       skipTimestamp = true;
     } else if (args[i] === '--rescan-events') {
       rescanEvents = true;
+    } else if (args[i] === '--no-update') {
+      update = false;
     }
   }
-  return { skipTimestamp, rescanEvents };
+  return { skipTimestamp, rescanEvents, update };
+}
+
+/** --no-update：读取本地 JSON 中的完整 records 与元数据；文件不存在或 records 为空则返回 null */
+function loadSavedArbitratorStatsForNoUpdate(outputFile: string): {
+  records: ArbitratorRecord[];
+  currentBlock: number;
+  eventsSyncedThroughBlock: number;
+} | null {
+  if (!fs.existsSync(outputFile)) {
+    return null;
+  }
+  try {
+    const data = JSON.parse(fs.readFileSync(outputFile, 'utf-8'));
+    const records = Array.isArray(data.records) ? (data.records as ArbitratorRecord[]) : [];
+    if (records.length === 0) {
+      return null;
+    }
+    const currentBlock = typeof data.currentBlock === 'number' ? data.currentBlock : 0;
+    let eventsSyncedThroughBlock = data.eventsSyncedThroughBlock;
+    if (typeof eventsSyncedThroughBlock !== 'number') {
+      eventsSyncedThroughBlock = typeof data.currentBlock === 'number' ? data.currentBlock : 0;
+    }
+    return { records, currentBlock, eventsSyncedThroughBlock };
+  } catch {
+    return null;
+  }
 }
 
 function recordToFromEvent(r: ArbitratorRecord): ArbitratorFromEvent {
@@ -405,72 +437,93 @@ function mergeRecords(
 }
 
 async function main() {
-  const { skipTimestamp, rescanEvents } = parseArgs();
+  const { skipTimestamp, rescanEvents, update } = parseArgs();
   const startTime = Date.now();
   console.log(`\n===== [网络: ${network}] 守护者统计 =====`);
-
-  const provider = new ethers.providers.JsonRpcProvider(RPC_URL);
-  const amIface = new ethers.utils.Interface(arbitratorManagerAbi);
-
-  const currentBlock = await provider.getBlockNumber();
-  console.log(`当前区块: ${currentBlock}`);
 
   const outputDir = path.join('data', network);
   const outputFile = path.join(outputDir, 'arbitrator_stats.json');
 
-  let existingEventMap: Map<string, ArbitratorFromEvent>;
-  let lastEventSyncedBlock: number;
-  if (rescanEvents) {
-    console.log('\n已指定 --rescan-events：从 network start_block 全量重扫事件（不合并本地 records 中的历史事件）');
-    existingEventMap = new Map();
-    lastEventSyncedBlock = INITIAL_START_BLOCK - 1;
-  } else {
-    const loaded = loadExistingStats(outputFile);
-    existingEventMap = loaded.eventMap;
-    lastEventSyncedBlock = loaded.lastEventSyncedBlock;
-    if (existingEventMap.size > 0) {
-      console.log(
-        `\n已加载本地 ${existingEventMap.size} 个守护者；事件上次已同步至区块 ${lastEventSyncedBlock}，将从 ${lastEventSyncedBlock + 1} 增量拉取`
-      );
+  let records: ArbitratorRecord[];
+  let currentBlock: number;
+
+  if (!update) {
+    if (rescanEvents) {
+      console.log('\n注意: 已指定 --no-update，--rescan-events 将被忽略。');
     }
+    const saved = loadSavedArbitratorStatsForNoUpdate(outputFile);
+    if (!saved) {
+      console.error(
+        `\n--no-update 需要已有非空数据文件: ${outputFile}\n请先不带 --no-update 运行一次以拉取链上数据。`
+      );
+      process.exit(1);
+    }
+    records = saved.records;
+    currentBlock = saved.currentBlock;
+    console.log(`\n跳过链上更新，使用已有数据 (--no-update)，共 ${records.length} 条记录`);
+    console.log(
+      `本地文件 currentBlock: ${currentBlock}，eventsSyncedThroughBlock: ${saved.eventsSyncedThroughBlock}（未查询当前链高度）`
+    );
+  } else {
+    const provider = new ethers.providers.JsonRpcProvider(RPC_URL);
+    const amIface = new ethers.utils.Interface(arbitratorManagerAbi);
+
+    currentBlock = await provider.getBlockNumber();
+    console.log(`当前区块: ${currentBlock}`);
+
+    let existingEventMap: Map<string, ArbitratorFromEvent>;
+    let lastEventSyncedBlock: number;
+    if (rescanEvents) {
+      console.log('\n已指定 --rescan-events：从 network start_block 全量重扫事件（不合并本地 records 中的历史事件）');
+      existingEventMap = new Map();
+      lastEventSyncedBlock = INITIAL_START_BLOCK - 1;
+    } else {
+      const loaded = loadExistingStats(outputFile);
+      existingEventMap = loaded.eventMap;
+      lastEventSyncedBlock = loaded.lastEventSyncedBlock;
+      if (existingEventMap.size > 0) {
+        console.log(
+          `\n已加载本地 ${existingEventMap.size} 个守护者；事件上次已同步至区块 ${lastEventSyncedBlock}，将从 ${lastEventSyncedBlock + 1} 增量拉取`
+        );
+      }
+    }
+
+    const eventFromBlock = Math.max(INITIAL_START_BLOCK, lastEventSyncedBlock + 1);
+    const newEventMap = await fetchArbitratorRegisteredLogs(
+      provider,
+      eventFromBlock,
+      currentBlock,
+      amIface,
+      skipTimestamp
+    );
+    const eventMap = mergeEventMaps(existingEventMap, newEventMap);
+    console.log(`\n合并后守护者总数: ${eventMap.size}（本地 + 本段增量）`);
+
+    const addrs = [...eventMap.keys()].map(k => eventMap.get(k)!.arbitrator);
+
+    if (addrs.length === 0) {
+      console.log('未发现守护者，退出。');
+      return;
+    }
+
+    console.log(`\n批量更新守护者基础信息 (${addrs.length} 个)…`);
+    const startTimeBasic = Date.now();
+    const basicMap = await fetchBasicInfoWithMulticall(provider, addrs, amIface);
+    console.log(`✅ 成功更新守护者基础信息: ${basicMap.size}/${addrs.length}`);
+    const endTimeBasic = Date.now();
+    const durationBasic = (endTimeBasic - startTimeBasic) / 1000;
+    console.log(`✨守护者基础信息更新耗时: ${durationBasic.toFixed(2)} 秒`);
+
+    console.log(`\n批量查询守护者原生币余额…`);
+    const startTimeBalance = Date.now();
+    const balanceMap = await getNativeBalancesBatch(addrs, RPC_URL);
+    const endTimeBalance = Date.now();
+    const durationBalance = (endTimeBalance - startTimeBalance) / 1000;
+    console.log(`✨守护者原生币余额查询耗时: ${durationBalance.toFixed(2)} 秒`);
+    console.log(`✅ 余额已更新`);
+
+    records = mergeRecords(eventMap, basicMap, balanceMap);
   }
-
-  const eventFromBlock = Math.max(INITIAL_START_BLOCK, lastEventSyncedBlock + 1);
-  const newEventMap = await fetchArbitratorRegisteredLogs(
-    provider,
-    eventFromBlock,
-    currentBlock,
-    amIface,
-    skipTimestamp
-  );
-  const eventMap = mergeEventMaps(existingEventMap, newEventMap);
-  console.log(`\n合并后守护者总数: ${eventMap.size}（本地 + 本段增量）`);
-
-  const addrs = [...eventMap.keys()].map(k => eventMap.get(k)!.arbitrator);
-
-  if (addrs.length === 0) {
-    console.log('未发现守护者，退出。');
-    return;
-  }
-
-  console.log(`\n批量更新守护者基础信息 (${addrs.length} 个)…`);
-  const startTimeBasic = Date.now();
-  const basicMap = await fetchBasicInfoWithMulticall(provider, addrs, amIface);
-  console.log(`✅ 成功更新守护者基础信息: ${basicMap.size}/${addrs.length}`);
-  const endTimeBasic = Date.now();
-  const durationBasic = (endTimeBasic - startTimeBasic) / 1000;
-  console.log(`✨守护者基础信息更新耗时: ${durationBasic.toFixed(2)} 秒`);
-
-  console.log(`\n批量查询守护者原生币余额…`);
-  const startTimeBalance = Date.now();
-  const balanceMap = await getNativeBalancesBatch(addrs, RPC_URL);
-  const endTimeBalance = Date.now();
-  const durationBalance = (endTimeBalance - startTimeBalance) / 1000;
-  console.log(`✨守护者原生币余额查询耗时: ${durationBalance.toFixed(2)} 秒`);
-  console.log(`✅ 余额已更新`);
-
-
-  const records = mergeRecords(eventMap, basicMap, balanceMap);
   const totalBalance = records.reduce(
     (s, r) => s.add(ethers.BigNumber.from(r.balanceRaw)),
     ethers.BigNumber.from(0)
@@ -493,69 +546,75 @@ async function main() {
 
   const activeArbitrators = records.filter(r => r.isActiveArbitrator);
   const inactiveArbitrators = records.filter(r => !r.isActiveArbitrator);
+  const deadlineArbitrators = records.filter(r => r.deadline > 0 && r.deadline < Date.now() / 1000 + MIN_DEADLINE_IN_SECONDS);
 
   console.log(`\n===== 守护者统计 =====`);
   console.log(`守护者总数: ${formatWithCommas(records.length, 0)}`);
   console.log(`活跃守护者: ${formatWithCommas(activeArbitrators.length, 0)}`);
   console.log(`非活跃守护者: ${formatWithCommas(inactiveArbitrators.length, 0)}`);
+  console.log(`期限小于370天的守护者数量: ${formatWithCommas(deadlineArbitrators.length, 0)}`);
   console.log(`低余额守护者: ${formatWithCommas(lowBalanceRecords.length, 0)}`);
   console.log(`守护者 PGA 余额合计: ${formatWithCommas(ethers.utils.formatEther(totalBalance), 4)}`);
   console.log(`守护者质押的 ELA 余额合计: ${formatWithCommas(ethers.utils.formatEther(totalStakeBalance), 4)}`);
 
   if (lowBalanceRecords.length > 0) {
-    console.log(`\n===== 低余额守护者(余额 < ${LOW_BALANCE_THRESHOLD_ETH} 按余额升序）=====`);
-    lowBalanceRecords.forEach((r, i) => {
+    console.log(`\n===== 低余额守护者Top10(余额 < ${LOW_BALANCE_THRESHOLD_ETH} 按余额升序）=====`);
+    lowBalanceRecords.slice(0, 10).forEach((r, i) => {
       console.log(`  ${i + 1}. ${r.arbitrator}  余额: ${r.balance}`);
     });
   }
 
-  fs.mkdirSync(outputDir, { recursive: true });
-  const lowBalanceFile = path.join(outputDir, 'arbitrator_low_balance.json');
-  const payloadBase = {
-    network,
-    arbitratorManager: ARBITRATOR_MANAGER,
-    currentBlock,
-    eventsSyncedThroughBlock: currentBlock,
-    fetchedAt: new Date().toISOString()
-  };
+  if (update) {
+    fs.mkdirSync(outputDir, { recursive: true });
+    const lowBalanceFile = path.join(outputDir, 'arbitrator_low_balance.json');
+    const payloadBase = {
+      network,
+      arbitratorManager: ARBITRATOR_MANAGER,
+      currentBlock,
+      eventsSyncedThroughBlock: currentBlock,
+      fetchedAt: new Date().toISOString()
+    };
 
-  fs.writeFileSync(
-    outputFile,
-    JSON.stringify(
-      {
-        ...payloadBase,
-        totalArbitrators: records.length,
-        activeArbitrators: activeArbitrators.length,
-        inactiveArbitrators: inactiveArbitrators.length,
-        totalNativeBalance: ethers.utils.formatEther(totalBalance),
-        totalNativeBalanceRaw: totalBalance.toString(),
-        totalStakeBalance: ethers.utils.formatEther(totalStakeBalance),
-        totalStakeBalanceRaw: totalStakeBalance.toString(),
-        records
-      },
-      null,
-      2
-    )
-  );
+    fs.writeFileSync(
+      outputFile,
+      JSON.stringify(
+        {
+          ...payloadBase,
+          totalArbitrators: records.length,
+          activeArbitrators: activeArbitrators.length,
+          inactiveArbitrators: inactiveArbitrators.length,
+          totalNativeBalance: ethers.utils.formatEther(totalBalance),
+          totalNativeBalanceRaw: totalBalance.toString(),
+          totalStakeBalance: ethers.utils.formatEther(totalStakeBalance),
+          totalStakeBalanceRaw: totalStakeBalance.toString(),
+          records
+        },
+        null,
+        2
+      )
+    );
 
-  fs.writeFileSync(
-    lowBalanceFile,
-    JSON.stringify(
-      {
-        ...payloadBase,
-        lowBalanceThresholdNative: LOW_BALANCE_THRESHOLD_ETH,
-        count: lowBalanceRecords.length,
-        records: lowBalanceRecords
-      },
-      null,
-      2
-    )
-  );
+    fs.writeFileSync(
+      lowBalanceFile,
+      JSON.stringify(
+        {
+          ...payloadBase,
+          lowBalanceThresholdNative: LOW_BALANCE_THRESHOLD_ETH,
+          count: lowBalanceRecords.length,
+          records: lowBalanceRecords
+        },
+        null,
+        2
+      )
+    );
 
-  console.log(`\n已写入: ${outputFile}`);
-  console.log(
-    `已写入 (余额 < ${LOW_BALANCE_THRESHOLD_ETH}): ${lowBalanceFile} (${formatWithCommas(lowBalanceRecords.length, 0)} 条)`
-  );
+    console.log(`\n已写入: ${outputFile}`);
+    console.log(
+      `已写入 (余额 < ${LOW_BALANCE_THRESHOLD_ETH}): ${lowBalanceFile} (${formatWithCommas(lowBalanceRecords.length, 0)} 条)`
+    );
+  } else {
+    console.log(`\n--no-update：未写入 ${outputFile} 与 arbitrator_low_balance.json`);
+  }
 
   // 显示脚本执行总时间
   const endTime = Date.now();
