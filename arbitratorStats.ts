@@ -48,11 +48,11 @@ const arbitratorManagerAbi = require('./abi/ArbitratorManager.json').abi;
 const multicall3Abi = require('./abi/Multicall3.json').abi;
 
 /** 每轮 Multicall 处理的守护者数量（每人 3 个调用：basicInfo + isActiveArbitrator + getAvailableStake） */
-const MULTICALL_BATCH_SIZE = 100;
+const MULTICALL_BATCH_SIZE = 400;
 /** 低余额阈值（原生币 */
 const LOW_BALANCE_THRESHOLD_ETH = '0.08';
 
-const MIN_DEADLINE_IN_SECONDS = 3600 * 24 * 370; // 360 天 + locktime10天
+const MIN_DEADLINE_IN_SECONDS = 3600 * 24 * 370; // 360 天 + locktime 10天
 
 interface ArbitratorFromEvent {
   arbitrator: string;
@@ -344,54 +344,66 @@ async function fetchBasicInfoWithMulticall(
       });
     }
 
-    const results = await multicall3.aggregate3(calls);
-    for (let j = 0; j < batch.length; j++) {
-      const addrLower = batch[j].toLowerCase();
-      const basicRes = results[j * 3];
-      const activeRes = results[j * 3 + 1];
-      const stakeRes = results[j * 3 + 2];
-      if (!basicRes.success) {
-        continue;
-      }
-      let isActiveArbitrator = false;
-      if (activeRes.success) {
-        try {
-          isActiveArbitrator = Boolean(
-            amIface.decodeFunctionResult('isActiveArbitrator', activeRes.returnData)[0]
-          );
-        } catch {
-          // 保持 false
-        }
-      }
-      let availableStake = '0';
-      let availableStakeRaw = '0';
-      if (stakeRes.success) {
-        try {
-          const stakeBn = amIface.decodeFunctionResult('getAvailableStake', stakeRes.returnData)[0];
-          availableStakeRaw = stakeBn.toString();
-          availableStake = ethers.utils.formatEther(stakeBn);
-        } catch {
-          // 保持 0
-        }
-      }
+    let batchOk = false;
+    for (let attempt = 0; attempt < 2 && !batchOk; attempt++) {
       try {
-        const decoded = amIface.decodeFunctionResult('getArbitratorBasicInfo', basicRes.returnData);
-        const t = decoded[0] as any;
-        out.set(addrLower, {
-          paused: Boolean(t.paused),
-          registerTime: t.registerTime.toNumber(),
-          deadline: t.deadline.toNumber(),
-          isActiveArbitrator,
-          availableStake,
-          availableStakeRaw
-        });
-      } catch {
-        // 忽略单条解码失败
+        const results = await multicall3.aggregate3(calls);
+        for (let j = 0; j < batch.length; j++) {
+          const addrLower = batch[j].toLowerCase();
+          const basicRes = results[j * 3];
+          const activeRes = results[j * 3 + 1];
+          const stakeRes = results[j * 3 + 2];
+          if (!basicRes.success) {
+            continue;
+          }
+          let isActiveArbitrator = false;
+          if (activeRes.success) {
+            try {
+              isActiveArbitrator = Boolean(
+                amIface.decodeFunctionResult('isActiveArbitrator', activeRes.returnData)[0]
+              );
+            } catch {
+              // 保持 false
+            }
+          }
+          let availableStake = '0';
+          let availableStakeRaw = '0';
+          if (stakeRes.success) {
+            try {
+              const stakeBn = amIface.decodeFunctionResult('getAvailableStake', stakeRes.returnData)[0];
+              availableStakeRaw = stakeBn.toString();
+              availableStake = ethers.utils.formatEther(stakeBn);
+            } catch {
+              // 保持 0
+            }
+          }
+          try {
+            const decoded = amIface.decodeFunctionResult('getArbitratorBasicInfo', basicRes.returnData);
+            const t = decoded[0] as any;
+            out.set(addrLower, {
+              paused: Boolean(t.paused),
+              registerTime: t.registerTime.toNumber(),
+              deadline: t.deadline.toNumber(),
+              isActiveArbitrator,
+              availableStake,
+              availableStakeRaw
+            });
+          } catch {
+            // 忽略单条解码失败
+          }
+        }
+        console.log(
+          `  ${Math.min(i + MULTICALL_BATCH_SIZE, arbitratorAddrs.length)}/${arbitratorAddrs.length} arbitrators updated`
+        );
+        batchOk = true;
+      } catch (error) {
+        if (attempt === 0) {
+          console.error(`Multicall 批次 ${i} - ${i + MULTICALL_BATCH_SIZE} 失败，重试一次…`, error);
+        } else {
+          console.error(`Multicall 批次 ${i} - ${i + MULTICALL_BATCH_SIZE} 重试后仍失败:`, error);
+        }
       }
     }
-    console.log(
-      `  ${Math.min(i + MULTICALL_BATCH_SIZE, arbitratorAddrs.length)}/${arbitratorAddrs.length} arbitrators updated`
-    );
   }
 
   return out;
