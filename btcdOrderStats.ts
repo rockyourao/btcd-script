@@ -94,6 +94,7 @@ enum OrderStatus {
   CLOSED = 9,                         // 已关闭（最终状态）
   TIMEOUT_REPAYMENT = 10,             // 超时还款（最终状态）
   RENEWAL_ORDER_REQUESTED = 11,       // 续期订单已请求
+  INCREASE_ORDER_REQUESTED = 12,      // 增贷已请求
 }
 
 // 订单状态名称映射
@@ -1274,6 +1275,7 @@ function buildOrderStats(
       closed: allRecords.filter(r => r.details?.status === OrderStatus.CLOSED).length,
       timeoutRepayment: allRecords.filter(r => r.details?.status === OrderStatus.TIMEOUT_REPAYMENT).length,
       renewalOrderRequested: allRecords.filter(r => r.details?.status === OrderStatus.RENEWAL_ORDER_REQUESTED).length,
+      increaseOrderRequested: allRecords.filter(r => r.details?.status === OrderStatus.INCREASE_ORDER_REQUESTED).length,
       liquidated: liquidatedOrders.length
     }
   };
@@ -1620,7 +1622,7 @@ async function main() {
   const btcdRepaidOrdersList = allRecords.filter(r => r.details?.borrowerRepaidTime > 0).sort((a, b) => b.details?.borrowerRepaidTime - a.details?.borrowerRepaidTime);
   const btcdRepaidOrdersTop10 = btcdRepaidOrdersList.slice(0, 10);
   btcdRepaidOrdersTop10.forEach((item, i) => {
-    console.log(`  ${i + 1}. ${item.orderId} 还款时间: ${item.details?.borrowerRepaidTimeStr}, BTCD数量: ${formatWithCommas(item.tokenAmount, 2)}`);
+    console.log(`  ${i + 1}. ${item.orderId} 还款时间: ${item.details?.borrowerRepaidTimeStr}, BTCD数量: ${formatWithCommas(item.tokenAmount, 2)} 版本: ${item.details?.orderVersion}`);
   });
 
   console.log(`\n===== 最近逾期订单 =====`)
@@ -1632,7 +1634,7 @@ async function main() {
   ).sort((a, b) => b.details?.deadLinesData?.repayDeadLine - a.details?.deadLinesData?.repayDeadLine);
   const overdueOrdersTop10 = overdueOrders.slice(0, 10);
   overdueOrdersTop10.forEach((item, i) => {
-    console.log(`  ${i + 1}. ${item.orderId} 还款时间: ${timestampToStr(item.details?.deadLinesData?.repayDeadLine)}, BTCD数量: ${formatWithCommas(item.tokenAmount, 2)}`);
+    console.log(`  ${i + 1}. ${item.orderId} 还款时间: ${timestampToStr(item.details?.deadLinesData?.repayDeadLine)}, BTCD数量: ${formatWithCommas(item.tokenAmount, 2)} 版本: ${item.details?.orderVersion}`);
   });
 
   console.log(`\n===== 最近将要逾期的订单 =====`)
@@ -1732,9 +1734,9 @@ async function main() {
   console.log(`  已关闭订单数: ${formatWithCommas(allRecords.filter(r => r.details?.orderVersion === 2 && r.details?.status === OrderStatus.CLOSED).length, 0)}`);
 
   // OrderVersion = 3
-  console.log(`\n===== OrderVersion = 3 的订单数量 =====`);
-  console.log(`  订单数: ${formatWithCommas(allRecords.filter(r => r.details?.orderVersion === 3).length, 0)}`);
-  console.log(`  已关闭订单数: ${formatWithCommas(allRecords.filter(r => r.details?.orderVersion === 3 && r.details?.status === OrderStatus.CLOSED).length, 0)}`);
+  console.log(`\n===== OrderVersion >= 3 的订单数量 =====`);
+  console.log(`  订单数: ${formatWithCommas(allRecords.filter(r => r.details?.orderVersion >= 3).length, 0)}`);
+  console.log(`  已关闭订单数: ${formatWithCommas(allRecords.filter(r => r.details?.orderVersion >= 3 && r.details?.status === OrderStatus.CLOSED).length, 0)}`);
 
   // 显示超时还款订单统计
   console.log(`\n===== 超时还款订单统计 =====`);
@@ -1762,6 +1764,7 @@ async function main() {
   console.log(`  CLOSED (已关闭): ${formatWithCommas(stats.statusStats.closed, 0)}`);
   console.log(`  TIMEOUT_REPAYMENT (超时还款): ${formatWithCommas(stats.statusStats.timeoutRepayment, 0)}`);
   console.log(`  RENEWAL_ORDER_REQUESTED (已请求续期): ${formatWithCommas(stats.statusStats.renewalOrderRequested, 0)}`);
+  console.log(`  INCREASE_ORDER_REQUESTED (已请求增贷): ${formatWithCommas(stats.statusStats.increaseOrderRequested, 0)}`);
   console.log(`  LIQUIDATED (已清算): ${formatWithCommas(stats.statusStats.liquidated, 0)}`);
 
 
