@@ -138,6 +138,27 @@ interface OrderDelayedEventItem {
   blockNumber: number;
   logIndex: number;
 }
+
+// LEND order version guide for frontend/backend routing:
+    //
+    // | orderType | version | Meaning                                      |
+    // |-----------|---------|----------------------------------------------|
+    // | LEND      | 1       | Legacy order flow.                           |
+    // | LEND      | 2       | Issuer flow removed; timeoutRepay supported. |
+    // | LEND      | 3       | Issuer pre-mints principal + interest.       |
+
+    // OBSIDIAN_ORDER version guide for frontend/backend routing:
+    //
+    // | orderType      | version | Meaning                                       |
+    // |----------------|---------|-----------------------------------------------|
+    // | OBSIDIAN_ORDER | 3       | Feature parity with LEND v3: timeoutRepay     |
+    // |                |         | plus pre-minted principal + interest.         |
+    // | OBSIDIAN_ORDER | 4       | Add repayment through the order contract      |
+    // |                |         | using BTCD balance.                           |
+    // | OBSIDIAN_ORDER | 5       | Add increase-loan: top-up principal against   |
+    // |                |         | the same collateral.                          |
+    //
+
 /**
  * orderVersion: 1: 旧版订单，利息6%，期权1%，30%给nbw，70%给pg，
  * orderVersion: 2: 由keeper解锁btc的订单，利息6%，去掉1%的期权
@@ -201,7 +222,7 @@ interface QueryOptions {
 }
 
 // Multicall 批次大小
-const MULTICALL_BATCH_SIZE = 100;
+const MULTICALL_BATCH_SIZE = 200;
 
 /**
  * 将链上 uint256 转为 number。0、type(uint256).max 或超出 JS 安全整数时返回 0，
@@ -259,6 +280,16 @@ async function fetchOrderDetailsWithMulticall(
 
   const nowTimestamp = Math.floor(Date.now() / 1000);
 
+  //1488
+  const exeptionOrderIdindex = orderIds.findIndex(orderId => orderId === '0x809ec6fbfa6899b6af8a39fd8a92dc17ad0d8d8b');
+  if (exeptionOrderIdindex !== -1) {
+    orderIds = orderIds.filter((_, index) => index !== exeptionOrderIdindex);
+  }
+
+  const callDataList = functionNames.map((funcName) =>
+    orderInterface.encodeFunctionData(funcName)
+  );
+
   // 分批处理订单
   for (let i = 0; i < orderIds.length; i += MULTICALL_BATCH_SIZE) {
     const batchOrderIds = orderIds.slice(i, i + MULTICALL_BATCH_SIZE);
@@ -266,8 +297,7 @@ async function fetchOrderDetailsWithMulticall(
 
     // 为每个订单构建调用数据
     for (const orderId of batchOrderIds) {
-      for (const funcName of functionNames) {
-        const callData = orderInterface.encodeFunctionData(funcName);
+      for (const callData of callDataList) {
         calls.push({
           target: orderId,
           allowFailure: true,
@@ -276,194 +306,202 @@ async function fetchOrderDetailsWithMulticall(
       }
     }
 
-    try {
-      const results = await multicall3.aggregate3(calls);
+    let batchOk = false;
+    for (let attempt = 0; attempt <= 2 && !batchOk; attempt++) {
+      try {
+        const results = await multicall3.aggregate3(calls);
+        // 解析结果
+        let resultIdx = 0;
+        for (const orderId of batchOrderIds) {
+          try {
+            const statusResult = results[resultIdx++];
+            const borrowerResult = results[resultIdx++];
+            const borrowerBtcAddressResult = results[resultIdx++];
+            const lenderResult = results[resultIdx++];
+            const lenderBtcAddressResult = results[resultIdx++];
+            const createTimeResult = results[resultIdx++];
+            const takenTimeResult = results[resultIdx++];
+            const borrowedTimeResult = results[resultIdx++];
+            const borrowerRepaidTimeResult = results[resultIdx++];
+            const deadLinesDataResult = results[resultIdx++];
+            const toLenderBtcTxResult = results[resultIdx++];
+            const limitedDaysResult = results[resultIdx++];
+            const orderVersionResult = results[resultIdx++];
+            const timeoutRepayerResult = results[resultIdx++];
+            const timeoutRepayerBtcAddressResult = results[resultIdx++];
+            const timeoutRepayTimeResult = results[resultIdx++];
+            const interestValueResult = results[resultIdx++];
 
-      // 解析结果
-      let resultIdx = 0;
-      for (const orderId of batchOrderIds) {
-        try {
-          const statusResult = results[resultIdx++];
-          const borrowerResult = results[resultIdx++];
-          const borrowerBtcAddressResult = results[resultIdx++];
-          const lenderResult = results[resultIdx++];
-          const lenderBtcAddressResult = results[resultIdx++];
-          const createTimeResult = results[resultIdx++];
-          const takenTimeResult = results[resultIdx++];
-          const borrowedTimeResult = results[resultIdx++];
-          const borrowerRepaidTimeResult = results[resultIdx++];
-          const deadLinesDataResult = results[resultIdx++];
-          const toLenderBtcTxResult = results[resultIdx++];
-          const limitedDaysResult = results[resultIdx++];
-          const orderVersionResult = results[resultIdx++];
-          const timeoutRepayerResult = results[resultIdx++];
-          const timeoutRepayerBtcAddressResult = results[resultIdx++];
-          const timeoutRepayTimeResult = results[resultIdx++];
-          const interestValueResult = results[resultIdx++];
-
-          // 解码各个字段
-          const status = statusResult.success
-            ? orderInterface.decodeFunctionResult('status', statusResult.returnData)[0]
-            : 0;
-          const borrower = borrowerResult.success
-            ? orderInterface.decodeFunctionResult('borrower', borrowerResult.returnData)[0]
-            : '';
-          const borrowerBtcAddress = borrowerBtcAddressResult.success
-            ? orderInterface.decodeFunctionResult('borrowerBtcAddress', borrowerBtcAddressResult.returnData)[0]
-            : '';
-          const lender = lenderResult.success
-            ? orderInterface.decodeFunctionResult('lender', lenderResult.returnData)[0]
-            : '';
-          const lenderBtcAddress = lenderBtcAddressResult.success
-            ? orderInterface.decodeFunctionResult('lenderBtcAddress', lenderBtcAddressResult.returnData)[0]
-            : '';
-          const createTime = createTimeResult.success
-            ? uint256ToSafeNumber(orderInterface.decodeFunctionResult('createTime', createTimeResult.returnData)[0])
-            : 0;
-          const takenTime = takenTimeResult.success
-            ? uint256ToSafeNumber(orderInterface.decodeFunctionResult('takenTime', takenTimeResult.returnData)[0])
-            : 0;
-          const borrowedTime = borrowedTimeResult.success
-            ? uint256ToSafeNumber(orderInterface.decodeFunctionResult('borrowedTime', borrowedTimeResult.returnData)[0])
-            : 0;
-          const borrowerRepaidTime = borrowerRepaidTimeResult.success
-            ? uint256ToSafeNumber(orderInterface.decodeFunctionResult('borrowerRepaidTime', borrowerRepaidTimeResult.returnData)[0])
-            : 0;
-          const orderVersion = orderVersionResult.success
-            ? Number(orderInterface.decodeFunctionResult('orderVersion', orderVersionResult.returnData)[0])
-            : 0;
-          const timeoutRepayer = timeoutRepayerResult.success
-            ? orderInterface.decodeFunctionResult('timeoutRepayer', timeoutRepayerResult.returnData)[0]
-            : '';
-          const timeoutRepayerBtcAddress = timeoutRepayerBtcAddressResult.success
-            ? orderInterface.decodeFunctionResult('timeoutRepayerBtcAddress', timeoutRepayerBtcAddressResult.returnData)[0]
-            : '';
-          const timeoutRepayTime = timeoutRepayTimeResult.success
-            ? uint256ToSafeNumber(orderInterface.decodeFunctionResult('timeoutRepayTime', timeoutRepayTimeResult.returnData)[0])
-            : 0;
-          let interestValue = '0';
-          let interestValueRaw = '0';
-          if (interestValueResult.success) {
-            const ivRaw = orderInterface.decodeFunctionResult('interestValue', interestValueResult.returnData)[0];
-            const ivBn = safeBigNumberFrom(ivRaw);
-            interestValueRaw = ivBn.toString();
-            interestValue = ethers.utils.formatEther(ivBn);
-          }
-
-          let deadLinesData = {
-            orderDeadLine: 0,
-            submitPledgeProofDeadLine: 0,
-            borrowDeadLine: 0,
-            repayDeadLine: 0,
-            submitRegularProofDeadLine: 0
-          };
-
-          if (deadLinesDataResult.success) {
-            const decoded = orderInterface.decodeFunctionResult('deadLinesData', deadLinesDataResult.returnData);
-            deadLinesData = {
-              orderDeadLine: uint256ToSafeNumber(decoded.orderDeadLine),
-              submitPledgeProofDeadLine: uint256ToSafeNumber(decoded.submitPledgeProofDeadLine),
-              borrowDeadLine: uint256ToSafeNumber(decoded.borrowDeadLine),
-              repayDeadLine: uint256ToSafeNumber(decoded.repayDeadLine),
-              submitRegularProofDeadLine: uint256ToSafeNumber(decoded.submitRegularProofDeadLine)
-            };
-          }
-
-          // 解码 toLenderBtcTx 获取 realBtcAmount、proofTimestamp
-          let realBtcAmountRaw = '0';
-          let realBtcAmount = '0';
-          let proofTimestamp = 0;
-          if (toLenderBtcTxResult.success) {
-            try {
-              const decoded = orderInterface.decodeFunctionResult('toLenderBtcTx', toLenderBtcTxResult.returnData);
-              realBtcAmountRaw = decoded.amount.toString();
-              realBtcAmount = formatBtc(decoded.amount);
-              proofTimestamp = uint256ToSafeNumber(decoded.proofTimestamp);
-            } catch {
-              // 解码失败，保持默认值
-            }
-          }
-
-          const limitedDays = limitedDaysResult.success
-            ? uint256ToSafeNumber(orderInterface.decodeFunctionResult('limitedDays', limitedDaysResult.returnData)[0])
-            : 0;
-
-          // 订单实际时长（天）= borrowerRepaidTime - borrowedTime，未还款则为 0
-          const orderPeriod =
-            borrowerRepaidTime > 0 && borrowedTime > 0
-              ? (borrowerRepaidTime - borrowedTime) / 86400
+            // 解码各个字段
+            const status = statusResult.success
+              ? orderInterface.decodeFunctionResult('status', statusResult.returnData)[0]
               : 0;
-          const orderPeriodStr = `${orderPeriod.toFixed(2)}天`;
+            const borrower = borrowerResult.success
+              ? orderInterface.decodeFunctionResult('borrower', borrowerResult.returnData)[0]
+              : '';
+            const borrowerBtcAddress = borrowerBtcAddressResult.success
+              ? orderInterface.decodeFunctionResult('borrowerBtcAddress', borrowerBtcAddressResult.returnData)[0]
+              : '';
+            const lender = lenderResult.success
+              ? orderInterface.decodeFunctionResult('lender', lenderResult.returnData)[0]
+              : '';
+            const lenderBtcAddress = lenderBtcAddressResult.success
+              ? orderInterface.decodeFunctionResult('lenderBtcAddress', lenderBtcAddressResult.returnData)[0]
+              : '';
+            const createTime = createTimeResult.success
+              ? uint256ToSafeNumber(orderInterface.decodeFunctionResult('createTime', createTimeResult.returnData)[0])
+              : 0;
+            const takenTime = takenTimeResult.success
+              ? uint256ToSafeNumber(orderInterface.decodeFunctionResult('takenTime', takenTimeResult.returnData)[0])
+              : 0;
+            const borrowedTime = borrowedTimeResult.success
+              ? uint256ToSafeNumber(orderInterface.decodeFunctionResult('borrowedTime', borrowedTimeResult.returnData)[0])
+              : 0;
+            const borrowerRepaidTime = borrowerRepaidTimeResult.success
+              ? uint256ToSafeNumber(orderInterface.decodeFunctionResult('borrowerRepaidTime', borrowerRepaidTimeResult.returnData)[0])
+              : 0;
+            const orderVersion = orderVersionResult.success
+              ? Number(orderInterface.decodeFunctionResult('orderVersion', orderVersionResult.returnData)[0])
+              : 0;
+            const timeoutRepayer = timeoutRepayerResult.success
+              ? orderInterface.decodeFunctionResult('timeoutRepayer', timeoutRepayerResult.returnData)[0]
+              : '';
+            const timeoutRepayerBtcAddress = timeoutRepayerBtcAddressResult.success
+              ? orderInterface.decodeFunctionResult('timeoutRepayerBtcAddress', timeoutRepayerBtcAddressResult.returnData)[0]
+              : '';
+            const timeoutRepayTime = timeoutRepayTimeResult.success
+              ? uint256ToSafeNumber(orderInterface.decodeFunctionResult('timeoutRepayTime', timeoutRepayTimeResult.returnData)[0])
+              : 0;
+            let interestValue = '0';
+            let interestValueRaw = '0';
+            if (interestValueResult.success) {
+              const ivRaw = orderInterface.decodeFunctionResult('interestValue', interestValueResult.returnData)[0];
+              const ivBn = safeBigNumberFrom(ivRaw);
+              interestValueRaw = ivBn.toString();
+              interestValue = ethers.utils.formatEther(ivBn);
+            }
 
-          // 订单实际时长（天）= 当前时间 - 借款时间，如果还款截止时间小于当前时间，则取还款截止时间 - 借款时间
-          let orderActualDuration = 0;
-          if (borrowedTime > 0) {
-            if (orderPeriod > 0) { // 已还款
-              orderActualDuration = orderPeriod;
-            } else { // 未还款
-              if (deadLinesData.repayDeadLine < nowTimestamp) {
-                orderActualDuration = (deadLinesData.repayDeadLine - borrowedTime) / 86400; // 已逾期
-              } else {
-                orderActualDuration = (nowTimestamp - borrowedTime) / 86400; // 未逾期
+            let deadLinesData = {
+              orderDeadLine: 0,
+              submitPledgeProofDeadLine: 0,
+              borrowDeadLine: 0,
+              repayDeadLine: 0,
+              submitRegularProofDeadLine: 0
+            };
+
+            if (deadLinesDataResult.success) {
+              const decoded = orderInterface.decodeFunctionResult('deadLinesData', deadLinesDataResult.returnData);
+              deadLinesData = {
+                orderDeadLine: uint256ToSafeNumber(decoded.orderDeadLine),
+                submitPledgeProofDeadLine: uint256ToSafeNumber(decoded.submitPledgeProofDeadLine),
+                borrowDeadLine: uint256ToSafeNumber(decoded.borrowDeadLine),
+                repayDeadLine: uint256ToSafeNumber(decoded.repayDeadLine),
+                submitRegularProofDeadLine: uint256ToSafeNumber(decoded.submitRegularProofDeadLine)
+              };
+            }
+
+            // 解码 toLenderBtcTx 获取 realBtcAmount、proofTimestamp
+            let realBtcAmountRaw = '0';
+            let realBtcAmount = '0';
+            let proofTimestamp = 0;
+            if (toLenderBtcTxResult.success) {
+              try {
+                const decoded = orderInterface.decodeFunctionResult('toLenderBtcTx', toLenderBtcTxResult.returnData);
+                realBtcAmountRaw = decoded.amount.toString();
+                realBtcAmount = formatBtc(decoded.amount);
+                proofTimestamp = uint256ToSafeNumber(decoded.proofTimestamp);
+              } catch {
+                // 解码失败，保持默认值
               }
             }
+
+            const limitedDays = limitedDaysResult.success
+              ? uint256ToSafeNumber(orderInterface.decodeFunctionResult('limitedDays', limitedDaysResult.returnData)[0])
+              : 0;
+
+            // 订单实际时长（天）= borrowerRepaidTime - borrowedTime，未还款则为 0
+            const orderPeriod =
+              borrowerRepaidTime > 0 && borrowedTime > 0
+                ? (borrowerRepaidTime - borrowedTime) / 86400
+                : 0;
+            const orderPeriodStr = `${orderPeriod.toFixed(2)}天`;
+
+            // 订单实际时长（天）= 当前时间 - 借款时间，如果还款截止时间小于当前时间，则取还款截止时间 - 借款时间
+            let orderActualDuration = 0;
+            if (borrowedTime > 0) {
+              if (orderPeriod > 0) { // 已还款
+                orderActualDuration = orderPeriod;
+              } else { // 未还款
+                if (deadLinesData.repayDeadLine < nowTimestamp) {
+                  orderActualDuration = (deadLinesData.repayDeadLine - borrowedTime) / 86400; // 已逾期
+                } else {
+                  orderActualDuration = (nowTimestamp - borrowedTime) / 86400; // 未逾期
+                }
+              }
+            }
+            const orderActualDurationStr = `${orderActualDuration.toFixed(2)}天`;
+
+            const orderIdLower = orderId.toLowerCase();
+            const useDiscount = collateralByOrderId
+              ? realBtcAmountRaw === (collateralByOrderId.get(orderIdLower) ?? '')
+              : false;
+
+            // 是否已延迟：以链上 OrderDelayed 事件为准（见 orderDelayedEvents；增量同步时从 existing 带入）
+            const preservedDelayed = existingOrderDelayedByOrderId?.get(orderIdLower);
+            const isDelayed = (preservedDelayed?.length ?? 0) > 0;
+
+            orderDetailsMap.set(orderIdLower, {
+              status,
+              statusName: OrderStatusNames[status] || 'Unknown',
+              borrower,
+              borrowerBtcAddress,
+              lender,
+              lenderBtcAddress,
+              createTime,
+              createTimeStr: timestampToStr(createTime),
+              takenTime,
+              takenTimeStr: timestampToStr(takenTime),
+              borrowedTime,
+              borrowedTimeStr: timestampToStr(borrowedTime),
+              borrowerRepaidTime,
+              borrowerRepaidTimeStr: timestampToStr(borrowerRepaidTime),
+              deadLinesData,
+              limitedDays,
+              orderPeriod,
+              orderPeriodStr,
+              orderActualDuration,
+              orderActualDurationStr,
+              realBtcAmount,
+              realBtcAmountRaw,
+              proofTimestamp,
+              proofTimestampStr: timestampToStr(proofTimestamp),
+              useDiscount,
+              isDelayed,
+              ...(preservedDelayed && preservedDelayed.length > 0 ? { orderDelayedEvents: preservedDelayed } : {}),
+              orderVersion,
+              timeoutRepayer,
+              timeoutRepayerBtcAddress,
+              timeoutRepayTime,
+              timeoutRepayTimeStr: timestampToStr(timeoutRepayTime),
+              interestValue,
+              interestValueRaw
+            });
+          } catch (decodeError) {
+            console.error(`❌解码订单 ${orderId} 详情失败:`, decodeError.reason, decodeError.code);
           }
-          const orderActualDurationStr = `${orderActualDuration.toFixed(2)}天`;
+        }
 
-          const orderIdLower = orderId.toLowerCase();
-          const useDiscount = collateralByOrderId
-            ? realBtcAmountRaw === (collateralByOrderId.get(orderIdLower) ?? '')
-            : false;
-
-          // 是否已延迟：以链上 OrderDelayed 事件为准（见 orderDelayedEvents；增量同步时从 existing 带入）
-          const preservedDelayed = existingOrderDelayedByOrderId?.get(orderIdLower);
-          const isDelayed = (preservedDelayed?.length ?? 0) > 0;
-
-          orderDetailsMap.set(orderIdLower, {
-            status,
-            statusName: OrderStatusNames[status] || 'Unknown',
-            borrower,
-            borrowerBtcAddress,
-            lender,
-            lenderBtcAddress,
-            createTime,
-            createTimeStr: timestampToStr(createTime),
-            takenTime,
-            takenTimeStr: timestampToStr(takenTime),
-            borrowedTime,
-            borrowedTimeStr: timestampToStr(borrowedTime),
-            borrowerRepaidTime,
-            borrowerRepaidTimeStr: timestampToStr(borrowerRepaidTime),
-            deadLinesData,
-            limitedDays,
-            orderPeriod,
-            orderPeriodStr,
-            orderActualDuration,
-            orderActualDurationStr,
-            realBtcAmount,
-            realBtcAmountRaw,
-            proofTimestamp,
-            proofTimestampStr: timestampToStr(proofTimestamp),
-            useDiscount,
-            isDelayed,
-            ...(preservedDelayed && preservedDelayed.length > 0 ? { orderDelayedEvents: preservedDelayed } : {}),
-            orderVersion,
-            timeoutRepayer,
-            timeoutRepayerBtcAddress,
-            timeoutRepayTime,
-            timeoutRepayTimeStr: timestampToStr(timeoutRepayTime),
-            interestValue,
-            interestValueRaw
-          });
-        } catch (decodeError) {
-          console.error(`❌解码订单 ${orderId} 详情失败:`, decodeError);
+        const progress = Math.min(i + MULTICALL_BATCH_SIZE, orderIds.length);
+        console.log(`已处理: ${progress}/${orderIds.length} (${((progress / orderIds.length) * 100).toFixed(1)}%)`);
+        batchOk = true;
+      } catch (error) {
+        if (attempt < 2) {
+          // console.error(`Multicall 批次 ${i} - ${i + MULTICALL_BATCH_SIZE} 失败，重试 (${attempt + 1}/2)…`, error.reason, error.code, error.error?.body);
+          console.error(`Multicall 批次 ${i} - ${i + MULTICALL_BATCH_SIZE} 失败，重试 (${attempt + 1}/2)…`, error.reason, error.code, error.error?.body);
+        } else {
+          console.error(`Multicall 批次 ${i} - ${i + MULTICALL_BATCH_SIZE} 重试后仍失败:`, error.reason, error.code, error.error?.body);
         }
       }
-
-      const progress = Math.min(i + MULTICALL_BATCH_SIZE, orderIds.length);
-      console.log(`已处理: ${progress}/${orderIds.length} (${((progress / orderIds.length) * 100).toFixed(1)}%)`);
-    } catch (error) {
-      console.error(`Multicall 批次 ${i} - ${i + MULTICALL_BATCH_SIZE} 失败:`, error);
     }
   }
 
@@ -525,7 +563,7 @@ async function fetchOrderClosedAndDelayedEvents(
         console.log(`区块 ${fromBlock} - ${toBlock}: 找到 ${batchMatched} 条 (累计: ${total})`);
       }
     } catch (error) {
-      console.error(`获取 OrderClosed/OrderDelayed 事件区块 ${fromBlock}-${toBlock} 失败:`, error);
+      console.error(`获取 OrderClosed/OrderDelayed 事件区块 ${fromBlock}-${toBlock} 失败:`, error.reason, error.code, error.error, error.body);
     }
   }
 
@@ -1136,18 +1174,18 @@ function buildOrderStats(
   /** 未显式版本时按旧版 v1（6%+期权）处理；0 亦为链上旧值 */
   const orderVersionOf = (r: OrderRecord) => r.details?.orderVersion ?? 1;
   /**
-   * 统计用利息：v3 每有一条 OrderDelayed 加计一笔与链上 interestValue 同口径的利息；v1/v2 仍为链上值
+   * 统计用利息：v3+ 每有一条 OrderDelayed 加计一笔与链上 interestValue 同口径的利息；v1/v2 仍为链上值
    */
   const effectiveInterestOf = (r: OrderRecord): number => {
     const base = interestOf(r);
-    if (orderVersionOf(r) !== 3) return base;
+    if (orderVersionOf(r) < 3) return base;
     const delayCount = r.details?.orderDelayedEvents?.length ?? 0;
     return base * (1 + delayCount);
   };
 
-  const totalInterestValue = btcdRepaidOrdersList.reduce((sum, r) => sum + effectiveInterestOf(r), 0);
+  const totalInterestValue = btcdRepaidOrdersList.filter(r => orderVersionOf(r) < 3).reduce((sum, r) => sum + effectiveInterestOf(r), 0);
 
-  const orderVersion3ValidOrders = validOrdersList.filter(r => orderVersionOf(r) === 3);
+  const orderVersion3ValidOrders = validOrdersList.filter(r => orderVersionOf(r) >= 3);
   const orderVersion3TotalInterestValue = orderVersion3ValidOrders.reduce((sum, r) => sum + effectiveInterestOf(r), 0);
   /** v3：总利息中应付 PG = 有效利息(含延期加计) * (6/7) * 70% */
   const V3_INTEREST_PG_SHARE = (6 / 7) * 0.7;
@@ -1165,28 +1203,28 @@ function buildOrderStats(
   };
 
   /**
-   * NBW：v1/v2 仅统计已还款订单，链上利息×30%；v3 为全部有效订单有效利息合计（借出时已全额付给 NBW，与 orderVersion3TotalInterestValue 一致，不在已还款列表中重复加计）
+   * NBW：v1/v2 仅统计已还款订单，链上利息×30%；v3+ 为全部有效订单有效利息合计（借出时已全额付给 NBW，与 orderVersion3TotalInterestValue 一致，不在已还款列表中重复加计）
    */
   const totalInterestToNBW =
     btcdRepaidOrdersList.reduce((sum, r) => {
-      if (orderVersionOf(r) === 3) return sum;
+      if (orderVersionOf(r) >= 3) return sum;
       return sum + interestOf(r) * 0.3;
     }, 0) + orderVersion3TotalInterestValue;
 
-  /** 待收仅 v1/v2：v3 借出时利息已结，不列入待收 */
+  /** 待收仅 v1/v2：v3+ 借出时利息已结，不列入待收 */
   const totalOutstandingInterestValue = borrowedOrders
-    .filter(r => orderVersionOf(r) !== 3)
+    .filter(r => orderVersionOf(r) < 3)
     .reduce((sum, r) => sum + effectiveInterestOf(r), 0);
   const totalOutstandingInterestToNBW = borrowedOrders.reduce((sum, r) => {
-    if (orderVersionOf(r) === 3) return sum;
+    if (orderVersionOf(r) >= 3) return sum;
     return sum + interestOf(r) * 0.3;
   }, 0);
 
-  /** 仅 v1/legacy 含 1% 期权（利息的 1/6）；v2 无期权；v3 为 7% 结构无此项 */
+  /** 仅 v1/legacy 含 1% 期权（利息的 1/6）；v2 无期权；v3+ 为 7% 结构无此项 */
   const totalOptionCost = validOrdersList
     .filter(r => {
       const v = orderVersionOf(r);
-      return v !== 2 && v !== 3;
+      return v < 2;
     })
     .reduce((sum, r) => sum + interestOf(r), 0) / 6;
 
@@ -1240,7 +1278,15 @@ function buildOrderStats(
       count: borrowedOrders.length,
       collateral: borrowedOrders.reduce((sum, r) => sum + parseFloat(r.details.realBtcAmount), 0),
       collateralDiscount: borrowedOrders.reduce((sum, r) => sum + parseFloat(r.collateral), 0),
-      tokenAmount: borrowedOrders.reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0)
+      tokenAmount: borrowedOrders.reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0),
+      orderVersion2: {
+        collateral: borrowedOrders.filter(r => orderVersionOf(r) === 2).reduce((sum, r) => sum + parseFloat(r.details.realBtcAmount), 0),
+        tokenAmount: borrowedOrders.filter(r => orderVersionOf(r) === 2).reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0)
+      },
+      orderVersionGt2: {
+        collateral: borrowedOrders.filter(r => orderVersionOf(r) > 2).reduce((sum, r) => sum + parseFloat(r.details.realBtcAmount), 0),
+        tokenAmount: borrowedOrders.filter(r => orderVersionOf(r) > 2).reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0)
+      }
     },
     liquidatedStats: {
       count: liquidatedOrders.length,
@@ -1587,8 +1633,8 @@ async function main() {
   //   `);
   // });
 
-  console.log(`\n===== 已借出订单质押 BTC 排行 Top30 =====`);
-  const borrowedCollateralRankTop10 = allRecords.filter(r => r.details?.status === OrderStatus.BORROWED).sort((a, b) => parseFloat(b.details?.realBtcAmount) - parseFloat(a.details?.realBtcAmount)).slice(0, 30);
+  console.log(`\n===== 已借出订单质押 BTC 排行 Top50 =====`);
+  const borrowedCollateralRankTop10 = allRecords.filter(r => r.details?.status === OrderStatus.BORROWED).sort((a, b) => parseFloat(b.details?.realBtcAmount) - parseFloat(a.details?.realBtcAmount)).slice(0, 50);
   borrowedCollateralRankTop10.forEach((item, i) => {
     console.log(`  ${i + 1}. 订单ID: ${item.orderId}, 质押BTC: ${formatWithCommas(item.details?.realBtcAmount, 2)} BTC, ${formatWithCommas(item.tokenAmount, 2)} BTCD, BTC地址: ${item.details?.borrowerBtcAddress}
     订单BTC地址: ${item.details?.lenderBtcAddress} EVM地址: ${item.details?.borrower}
@@ -1622,26 +1668,26 @@ async function main() {
   const btcdRepaidOrdersList = allRecords.filter(r => r.details?.borrowerRepaidTime > 0).sort((a, b) => b.details?.borrowerRepaidTime - a.details?.borrowerRepaidTime);
   const btcdRepaidOrdersTop10 = btcdRepaidOrdersList.slice(0, 10);
   btcdRepaidOrdersTop10.forEach((item, i) => {
-    console.log(`  ${i + 1}. ${item.orderId} 还款时间: ${item.details?.borrowerRepaidTimeStr}, BTCD数量: ${formatWithCommas(item.tokenAmount, 2)} 版本: ${item.details?.orderVersion}`);
+    console.log(`  ${i + 1}. ${item.orderId} 还款时间: ${item.details?.borrowerRepaidTimeStr}, BTCD数量: ${formatWithCommas(item.tokenAmount, 2)} BTC 价格: ${formatWithCommas(item.btcPrice, 2)} 版本: ${item.details?.orderVersion}`);
   });
 
   console.log(`\n===== 最近逾期订单 =====`)
   const overdueOrders = allRecords.filter(r =>
-    r.details?.status === OrderStatus.BORROWED &&
+    (r.details?.status === OrderStatus.BORROWED || r.details?.status === OrderStatus.CLOSED) &&
     r.details?.deadLinesData?.repayDeadLine > 0 &&
     r.details?.deadLinesData?.repayDeadLine < nowTimestamp &&
     !r.details?.borrowerRepaidTime
   ).sort((a, b) => b.details?.deadLinesData?.repayDeadLine - a.details?.deadLinesData?.repayDeadLine);
   const overdueOrdersTop10 = overdueOrders.slice(0, 10);
   overdueOrdersTop10.forEach((item, i) => {
-    console.log(`  ${i + 1}. ${item.orderId} 还款时间: ${timestampToStr(item.details?.deadLinesData?.repayDeadLine)}, BTCD数量: ${formatWithCommas(item.tokenAmount, 2)} 版本: ${item.details?.orderVersion}`);
+    console.log(`  ${i + 1}. ${item.orderId} 还款时间: ${timestampToStr(item.details?.deadLinesData?.repayDeadLine)}, BTCD数量: ${formatWithCommas(item.tokenAmount, 2)} BTC 价格: ${formatWithCommas(item.btcPrice, 2)} 版本: ${item.details?.orderVersion}`);
   });
 
   console.log(`\n===== 最近将要逾期的订单 =====`)
   const toOverdueOrdersList = allRecords.filter(r => r.details?.status === OrderStatus.BORROWED && r.details?.deadLinesData?.repayDeadLine > nowTimestamp).sort((a, b) => a.details?.deadLinesData?.repayDeadLine - b.details?.deadLinesData?.repayDeadLine);
-  const toOverdueOrdersTop20 = toOverdueOrdersList.slice(0, 20);
+  const toOverdueOrdersTop20 = toOverdueOrdersList.slice(0, 50);
   toOverdueOrdersTop20.forEach((item, i) => {
-    console.log(`  ${i + 1}. ${item.orderId} 还款时间: ${timestampToStr(item.details?.deadLinesData?.repayDeadLine)}, BTCD数量: ${formatWithCommas(item.tokenAmount, 2)} 版本: ${item.details?.orderVersion}`);
+    console.log(`  ${i + 1}. ${item.orderId} 还款时间: ${timestampToStr(item.details?.deadLinesData?.repayDeadLine)}, BTCD数量: ${formatWithCommas(item.tokenAmount, 2)} BTC 价格: ${formatWithCommas(item.btcPrice, 2)} 版本: ${item.details?.orderVersion}`);
   });
 
   // 列出所有过期订单中，关闭时间小于订单的proofTimestamp+limitedDays*86400的订单
@@ -1689,13 +1735,13 @@ async function main() {
   console.log(`已还款订单中实际时长小于1天的订单数量: ${stats.btcdRepaidOrdersPeriodLessThan1DayCount}`);
 
   console.log(`\n===== 利息总额 （BTCD）=====`);
-  console.log(`已收到的利息总额（v3 含 OrderDelayed 加计: interest×(1+延期次数)）: ${formatWithCommas(stats.totalInterestValue, 2)}`);
+  console.log(`已收到的利息总额（v1/v2 已还款）: ${formatWithCommas(stats.totalInterestValue, 2)}`);
   console.log(`NBW已收到的利息分成 (v1/v2 已还款×链上利息×30%；v3 为全部有效订单利息): ${formatWithCommas(stats.totalInterestToNBW, 2)}`);
   console.log(`待收到的利息总额（未还款，仅 v1/v2；v3 借出时已收息不计）: ${formatWithCommas(stats.totalOutstandingInterestValue, 2)}`);
   console.log(`NBW待收到的利息分成（未还款，仅 v1/v2×30%；v3 为 0）: ${formatWithCommas(stats.totalOutstandingInterestToNBW, 2)}`);
   console.log(`期权费用总额（仅 v1/旧版：利息×1/6；v2/v3 不计）: ${formatWithCommas(stats.totalOptionCost, 2)}`);
-  console.log(`orderVersion=3 有效订单利息总额（含延期支付的利息）: ${formatWithCommas(stats.orderVersion3TotalInterestValue, 2)}`);
-  console.log(`orderVersion=3 利息中应付给 PG (有效利息×6/7×70%): ${formatWithCommas(stats.orderVersion3InterestShareToPG, 2)}`);
+  console.log(`orderVersion>=3 有效订单利息总额（含延期支付的利息）: ${formatWithCommas(stats.orderVersion3TotalInterestValue, 2)}`);
+  console.log(`orderVersion>=3 利息中应付给 PG (有效利息×6/7×70%): ${formatWithCommas(stats.orderVersion3InterestShareToPG, 2)}`);
   console.log(
     `有效订单中 OBSIDIAN_ORDER 订单数: ${formatWithCommas(stats.obsidianOrder.count, 0)}；` +
       `总铸造 BTCD: ${formatWithCommas(stats.obsidianOrder.totalTokenAmount, 2)}；` +
@@ -1715,6 +1761,10 @@ async function main() {
   console.log(`  抵押 BTC: ${formatWithCommas(stats.currentBorrowed.collateral, 8)} BTC`);
   console.log(`  抵押 BTC (使用Discount): ${formatWithCommas(stats.currentBorrowed.collateralDiscount, 8)} BTC`);
   console.log(`  BTCD 数量: ${formatWithCommas(stats.currentBorrowed.tokenAmount, 2)}`);
+  console.log(`  orderVersion=2 抵押 BTC: ${formatWithCommas(stats.currentBorrowed.orderVersion2.collateral, 8)} BTC`);
+  console.log(`  orderVersion=2 BTCD 数量: ${formatWithCommas(stats.currentBorrowed.orderVersion2.tokenAmount, 2)}`);
+  console.log(`  orderVersion>2 抵押 BTC: ${formatWithCommas(stats.currentBorrowed.orderVersionGt2.collateral, 8)} BTC`);
+  console.log(`  orderVersion>2 BTCD 数量: ${formatWithCommas(stats.currentBorrowed.orderVersionGt2.tokenAmount, 2)}`);
 
   // 显示已清算订单统计
   console.log(`\n===== 已清算订单统计 =====`);
