@@ -1245,6 +1245,7 @@ function buildOrderStats(
     obsidianOrders: allRecords.filter(r => r.orderType === OrderType.ObsidianOrder).length,
     totalCollateral: allRecords.filter(r => r.details?.borrowedTime > 0).reduce((sum, r) => sum + parseFloat(r.details.realBtcAmount), 0),
     totalCollateralDiscount: allRecords.filter(r => r.details?.borrowedTime > 0).reduce((sum, r) => sum + parseFloat(r.collateral), 0),
+    totalUnlockedCollateral: allRecords.filter(r => r.details?.borrowedTime > 0 && r.details?.borrowerRepaidTime > 0 && r.details?.status === OrderStatus.CLOSED).reduce((sum, r) => sum + parseFloat(r.details.realBtcAmount), 0),
     totalTokenAmount: allRecords.filter(r => r.details?.borrowedTime > 0).reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0),
     totalOptionCost,
     totalInterestValue: totalInterestValue,
@@ -1260,7 +1261,11 @@ function buildOrderStats(
     lockedInOrdersBTCD: lockedInOrdersBTCDList.reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0),
     lockedInOrdersBTCDCount: lockedInOrdersBTCDList.length,
     uniqueTokens: [...new Set(allRecords.map(r => r.token))],
-    delayedOrders: delayedOrdersList.length,
+    delayedStats: {
+      count: delayedOrdersList.length,
+      collateral: delayedOrdersList.reduce((sum, r) => sum + parseFloat(r.details.realBtcAmount), 0),
+      tokenAmount: delayedOrdersList.reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0)
+    },
     avgOrderPeriodDays,
     avgOrderPeriodStr,
     avgOrderPeriodDaysBiggerThan10,
@@ -1721,9 +1726,12 @@ async function main() {
   }
   // console.log(`借款订单 (Borrow): ${stats.borrowOrders}`);
   // console.log(`出借订单 (Lend): ${stats.lendOrders}`);
-  console.log(`累计总抵押 BTC: ${formatWithCommas(stats.totalCollateral, 2)} BTC`);
-  console.log(`累计总抵押 BTC (使用Discount): ${formatWithCommas(stats.totalCollateralDiscount, 2)} BTC`);
-  console.log(`延期订单数: ${formatWithCommas(stats.delayedOrders, 0)}`);
+  console.log(`累计总抵押 BTC: ${formatWithCommas(stats.totalCollateral, 4)} BTC`);
+  console.log(`累计总抵押 BTC (使用Discount): ${formatWithCommas(stats.totalCollateralDiscount, 4)} BTC`);
+  console.log(`累计已解锁 BTC: ${formatWithCommas(stats.totalUnlockedCollateral, 4)} BTC`);
+  console.log(`延期订单数: ${formatWithCommas(stats.delayedStats.count, 0)}`);
+  console.log(`延期订单抵押 BTC: ${formatWithCommas(stats.delayedStats.collateral, 4)} BTC`);
+  console.log(`延期订单 BTCD 数量: ${formatWithCommas(stats.delayedStats.tokenAmount, 2)}`);
   console.log(`累计BTCD铸造总量: ${formatWithCommas(stats.totalTokenAmount, 2)}`);
   console.log(`活跃订单铸造BTCD数量: ${formatWithCommas(stats.activeTokenAmount, 2)}`);
   console.log(`订单铸造BTCD总量（活跃订单 + 已清算订单）: ${formatWithCommas(stats.currentMintedBTCD, 2)}`);
