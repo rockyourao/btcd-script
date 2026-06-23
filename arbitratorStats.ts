@@ -48,7 +48,7 @@ const arbitratorManagerAbi = require('./abi/ArbitratorManager.json').abi;
 const multicall3Abi = require('./abi/Multicall3.json').abi;
 
 /** 每轮 Multicall 处理的守护者数量（每人 3 个调用：basicInfo + isActiveArbitrator + getAvailableStake） */
-const MULTICALL_BATCH_SIZE = 400;
+const MULTICALL_BATCH_SIZE = 200;
 /** 低余额阈值（原生币 */
 const LOW_BALANCE_THRESHOLD_ETH = '0.08';
 

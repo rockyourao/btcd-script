@@ -20,6 +20,7 @@ import {
   TIMESTAMP_BATCH_SIZE
 } from './config';
 import { formatTimestampDisplay, formatWithCommas, getUnitStartTimestamp } from './util';
+import path from 'path';
 
 // 从命令行参数解析 network
 function getNetworkFromArgs(): string {
@@ -92,55 +93,52 @@ async function getAllTransfers(startBlock: number): Promise<{ transfers: Transfe
   // batch query to avoid RPC limit
   const allLogs: any[] = [];
 
-  // two queries: mint and burn
-  // mint: from = zero address
-  // burn: to = zero address
-  const queries = [
-    { name: '铸造', topics: [transferTopic, ZERO_ADDRESS_TOPIC, null] },
-    { name: '销毁', topics: [transferTopic, null, ZERO_ADDRESS_TOPIC] }
-  ];
+  // mint: from = zero address; burn: to = zero address
+  const MINT_TOPICS = [transferTopic, ZERO_ADDRESS_TOPIC, null];
+  const BURN_TOPICS = [transferTopic, null, ZERO_ADDRESS_TOPIC];
+  const SMALLER_BATCH = 5000;
 
-  for (const query of queries) {
-    console.log(`\n正在查询${query.name}事件...`);
+  const fetchMintBurnLogs = async (fromBlock: number, toBlock: number) => {
+    return Promise.all([
+      provider.getLogs({
+        address: TOKEN_ADDRESS,
+        topics: MINT_TOPICS,
+        fromBlock,
+        toBlock
+      }),
+      provider.getLogs({
+        address: TOKEN_ADDRESS,
+        topics: BURN_TOPICS,
+        fromBlock,
+        toBlock
+      }),
+    ]);
+  };
 
-    for (let fromBlock = startBlock; fromBlock <= currentBlock; fromBlock += BATCH_SIZE) {
-      const toBlock = Math.min(fromBlock + BATCH_SIZE - 1, currentBlock);
+  console.log('\n正在并行查询铸造/销毁事件...');
 
+  for (let fromBlock = startBlock; fromBlock <= currentBlock; fromBlock += BATCH_SIZE) {
+    const toBlock = Math.min(fromBlock + BATCH_SIZE - 1, currentBlock);
+
+    try {
+      const [mintLogs, burnLogs] = await fetchMintBurnLogs(fromBlock, toBlock);
+      allLogs.push(...mintLogs, ...burnLogs);
+
+      if (mintLogs.length > 0 || burnLogs.length > 0) {
+        console.log(`区块 ${fromBlock} - ${toBlock}: 找到 ${mintLogs.length} 条铸造, ${burnLogs.length} 条销毁记录`);
+      }
+    } catch (error) {
+      console.error(`查询区块 ${fromBlock} - ${toBlock} 失败:`, error);
+      const subFrom = fromBlock;
+      const subTo = Math.min(fromBlock + SMALLER_BATCH - 1, currentBlock);
       try {
-        const logs = await provider.getLogs({
-          address: TOKEN_ADDRESS,
-          topics: query.topics,
-          fromBlock,
-          toBlock
-        });
-
-        allLogs.push(...logs);
-
-        if (logs.length > 0) {
-          console.log(`区块 ${fromBlock} - ${toBlock}: 找到 ${logs.length} 条${query.name}记录`);
+        const [mintLogs, burnLogs] = await fetchMintBurnLogs(subFrom, subTo);
+        allLogs.push(...mintLogs, ...burnLogs);
+        if (mintLogs.length > 0 || burnLogs.length > 0) {
+          console.log(`区块 ${subFrom} - ${subTo}: 找到 ${mintLogs.length} 条铸造, ${burnLogs.length} 条销毁记录`);
         }
-      } catch (error) {
-        console.error(`查询区块 ${fromBlock} - ${toBlock} 失败:`, error);
-        // 如果失败，尝试更小的批次
-        const SMALLER_BATCH = 10000;
-        // for (let subFrom = fromBlock; subFrom <= toBlock; subFrom += SMALLER_BATCH) {
-          const subFrom = fromBlock;
-          const subTo = Math.min(fromBlock + SMALLER_BATCH - 1, currentBlock);
-          try {
-            const logs = await provider.getLogs({
-              address: TOKEN_ADDRESS,
-              topics: query.topics,
-              fromBlock: subFrom,
-              toBlock: subTo
-            });
-            allLogs.push(...logs);
-            if (logs.length > 0) {
-              console.log(`区块 ${subFrom} - ${subTo}: 找到 ${logs.length} 条${query.name}记录`);
-            }
-          } catch (subError) {
-            console.error(`查询区块 ${subFrom} - ${subTo} 失败:`, subError);
-          }
-        // }
+      } catch (subError) {
+        console.error(`查询区块 ${subFrom} - ${subTo} 失败:`, subError);
       }
     }
   }
@@ -472,6 +470,9 @@ async function main() {
         usdtTransfers
       };
       fs.writeFileSync(OUTPUT_FILE, JSON.stringify(outputData, null, 2));
+      const outputDir = path.dirname(OUTPUT_FILE);
+      fs.writeFileSync(path.join(outputDir, 'btcd_minted_by_usdt.json'), JSON.stringify(usdtTransfers, null, 2));
+
       console.log(`\n所有记录已保存到 ${OUTPUT_FILE}`);
       console.log(`最后区块: ${lastBlock}`);
       console.log(`提示: 运行 "npx ts-node src/utils/getBTCDTransfers.ts --to-csv" 可将 JSON 转换为 CSV`);

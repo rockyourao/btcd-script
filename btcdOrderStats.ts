@@ -222,7 +222,7 @@ interface QueryOptions {
 }
 
 // Multicall 批次大小
-const MULTICALL_BATCH_SIZE = 200;
+const MULTICALL_BATCH_SIZE = 100;
 
 /**
  * 将链上 uint256 转为 number。0、type(uint256).max 或超出 JS 安全整数时返回 0，
@@ -279,12 +279,6 @@ async function fetchOrderDetailsWithMulticall(
   console.log(`每批次处理: ${MULTICALL_BATCH_SIZE} 个订单`);
 
   const nowTimestamp = Math.floor(Date.now() / 1000);
-
-  //1488
-  const exeptionOrderIdindex = orderIds.findIndex(orderId => orderId === '0x809ec6fbfa6899b6af8a39fd8a92dc17ad0d8d8b');
-  if (exeptionOrderIdindex !== -1) {
-    orderIds = orderIds.filter((_, index) => index !== exeptionOrderIdindex);
-  }
 
   const callDataList = functionNames.map((funcName) =>
     orderInterface.encodeFunctionData(funcName)
@@ -1658,13 +1652,13 @@ async function main() {
     console.log(`  ${i + 1}. ${item[0]} 质押BTC: ${formatWithCommas(item[1], 2)} BTC`);
   });
 
-  console.log(`\n===== 已借出订单中 质押 BTC 总和的 BTC 地址排行 Top10 =====`);
+  console.log(`\n===== 已借出订单中 质押 BTC 总和的 BTC 地址排行 Top20 =====`);
   const borrowedCollateralRankByBtcAddressTop10 = Array.from(allRecords.filter(r => r.details?.status === OrderStatus.BORROWED).reduce((acc, r) => {
     if (r.details?.borrowerBtcAddress) {
       acc.set(r.details?.borrowerBtcAddress, (acc.get(r.details?.borrowerBtcAddress) || 0) + parseFloat(r.details?.realBtcAmount));
     }
     return acc;
-  }, new Map<string, number>()).entries()).sort((a, b) => b[1] - a[1]).slice(0, 10);
+  }, new Map<string, number>()).entries()).sort((a, b) => b[1] - a[1]).slice(0, 20);
   borrowedCollateralRankByBtcAddressTop10.forEach((item, i) => {
     console.log(`  ${i + 1}. ${item[0]} 质押BTC: ${formatWithCommas(item[1], 2)} BTC`);
   });
@@ -1743,7 +1737,7 @@ async function main() {
   console.log(`已还款订单中实际时长小于1天的订单数量: ${stats.btcdRepaidOrdersPeriodLessThan1DayCount}`);
 
   console.log(`\n===== 利息总额 （BTCD）=====`);
-  console.log(`已收到的利息总额（v1/v2 已还款）: ${formatWithCommas(stats.totalInterestValue, 2)}`);
+  console.log(`NBW + PG 已收到的利息总额（v1/v2 已还款）: ${formatWithCommas(stats.totalInterestValue, 2)}`);
   console.log(`NBW已收到的利息分成 (v1/v2 已还款×链上利息×30%；v3 为全部有效订单利息): ${formatWithCommas(stats.totalInterestToNBW, 2)}`);
   console.log(`待收到的利息总额（未还款，仅 v1/v2；v3 借出时已收息不计）: ${formatWithCommas(stats.totalOutstandingInterestValue, 2)}`);
   console.log(`NBW待收到的利息分成（未还款，仅 v1/v2×30%；v3 为 0）: ${formatWithCommas(stats.totalOutstandingInterestToNBW, 2)}`);
