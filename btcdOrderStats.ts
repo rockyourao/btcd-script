@@ -1196,6 +1196,14 @@ function buildOrderStats(
     totalEffectiveInterest: obsidianOrderValid.reduce((sum, r) => sum + effectiveInterestOf(r), 0)
   };
 
+  const obsidianOrderValidBiggerThan10 = obsidianOrderValid.filter(r => parseFloat(r.tokenAmount) > 10);
+  const obsidianOrderBiggerThan10 = {
+    count: obsidianOrderValidBiggerThan10.length,
+    totalTokenAmount: obsidianOrderValidBiggerThan10.reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0),
+    totalCollateralBtc: obsidianOrderValidBiggerThan10.reduce((sum, r) => sum + parseFloat(r.details?.realBtcAmount || '0'), 0),
+    totalEffectiveInterest: obsidianOrderValidBiggerThan10.reduce((sum, r) => sum + effectiveInterestOf(r), 0)
+  };
+
   /**
    * NBW：v1/v2 仅统计已还款订单，链上利息×30%；v3+ 为全部有效订单有效利息合计（借出时已全额付给 NBW，与 orderVersion3TotalInterestValue 一致，不在已还款列表中重复加计）
    */
@@ -1240,7 +1248,8 @@ function buildOrderStats(
     totalCollateral: allRecords.filter(r => r.details?.borrowedTime > 0).reduce((sum, r) => sum + parseFloat(r.details.realBtcAmount), 0),
     totalCollateralDiscount: allRecords.filter(r => r.details?.borrowedTime > 0).reduce((sum, r) => sum + parseFloat(r.collateral), 0),
     totalUnlockedCollateral: allRecords.filter(r => r.details?.borrowedTime > 0 && r.details?.borrowerRepaidTime > 0 && r.details?.status === OrderStatus.CLOSED).reduce((sum, r) => sum + parseFloat(r.details.realBtcAmount), 0),
-    totalTokenAmount: allRecords.filter(r => r.details?.borrowedTime > 0).reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0),
+    totalBorrowedTokenAmount: allRecords.filter(r => r.details?.borrowedTime > 0).reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0),
+    totalTokenAmount: allRecords.reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0),
     totalOptionCost,
     totalInterestValue: totalInterestValue,
     totalInterestToNBW,
@@ -1249,11 +1258,12 @@ function buildOrderStats(
     orderVersion3TotalInterestValue,
     orderVersion3InterestShareToPG,
     obsidianOrder,
+    obsidianOrderBiggerThan10,
     activeTokenAmount: allRecords.filter(r => r.details?.status !== OrderStatus.CLOSED).reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0),
     currentMintedBTCD: allRecords.filter(r => r.details?.status !== OrderStatus.CLOSED).reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0) +
       liquidatedOrders.reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0),
     lockedInOrdersBTCD: lockedInOrdersBTCDList.reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0),
-    lockedInOrdersBTCDCount: lockedInOrdersBTCDList.length,
+    inactiveOrderCount: lockedInOrdersBTCDList.length,
     uniqueTokens: [...new Set(allRecords.map(r => r.token))],
     delayedStats: {
       count: delayedOrdersList.length,
@@ -1278,6 +1288,10 @@ function buildOrderStats(
       collateral: borrowedOrders.reduce((sum, r) => sum + parseFloat(r.details.realBtcAmount), 0),
       collateralDiscount: borrowedOrders.reduce((sum, r) => sum + parseFloat(r.collateral), 0),
       tokenAmount: borrowedOrders.reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0),
+      orderVersion1: {
+        collateral: borrowedOrders.filter(r => orderVersionOf(r) < 2).reduce((sum, r) => sum + parseFloat(r.details.realBtcAmount), 0),
+        tokenAmount: borrowedOrders.filter(r => orderVersionOf(r) < 2).reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0)
+      },
       orderVersion2: {
         collateral: borrowedOrders.filter(r => orderVersionOf(r) === 2).reduce((sum, r) => sum + parseFloat(r.details.realBtcAmount), 0),
         tokenAmount: borrowedOrders.filter(r => orderVersionOf(r) === 2).reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0)
@@ -1481,6 +1495,7 @@ function computeUserStats(allRecords: OrderRecord[]): {
   const btcuserOrderCount = new Map<string, number>();
   userOrders.forEach(r => {
     const user = r.details!.borrowerBtcAddress.toLowerCase();
+    // the borrowerBtcAddress is empty if the order is obsidian order
     btcuserOrderCount.set(user, (btcuserOrderCount.get(user) || 0) + 1);
   });
   const btcuserOrderRanking = Array.from(btcuserOrderCount.entries())
@@ -1543,8 +1558,8 @@ function printUserStats(us: ReturnType<typeof computeUserStats>): void {
   });
   console.log(`\n===== BTC用户总数 =====`);
   console.log(`BTC用户总数: ${formatWithCommas(us.totalBTCUsers, 0)}`);
-  console.log(`\n===== BTC用户 Take 订单数排行榜 (Top 10) =====`);
-  us.btcuserOrderRanking.slice(0, 10).forEach((item, index) => {
+  console.log(`\n===== BTC用户 Take 订单数排行榜 (Top 20) =====`);
+  us.btcuserOrderRanking.slice(0, 20).forEach((item, index) => {
     console.log(`  ${(index + 1).toString().padStart(2, ' ')}. ${item.user}: ${formatWithCommas(item.count, 0)} 单`);
   });
 }
@@ -1637,7 +1652,7 @@ async function main() {
   borrowedCollateralRankTop10.forEach((item, i) => {
     console.log(`  ${i + 1}. 订单ID: ${item.orderId}, 质押BTC: ${formatWithCommas(item.details?.realBtcAmount, 2)} BTC, ${formatWithCommas(item.tokenAmount, 2)} BTCD, BTC地址: ${item.details?.borrowerBtcAddress}
     订单BTC地址: ${item.details?.lenderBtcAddress} EVM地址: ${item.details?.borrower}
-    BTC 价格: ${formatWithCommas(item.btcPrice, 2)}
+    BTC 价格: ${formatWithCommas(item.btcPrice, 2)}, 截止日期: ${timestampToStr(item.details?.deadLinesData?.repayDeadLine)}
     `);
   });
 
@@ -1723,13 +1738,18 @@ async function main() {
   console.log(`累计总抵押 BTC: ${formatWithCommas(stats.totalCollateral, 4)} BTC`);
   console.log(`累计总抵押 BTC (使用Discount): ${formatWithCommas(stats.totalCollateralDiscount, 4)} BTC`);
   console.log(`累计已解锁 BTC: ${formatWithCommas(stats.totalUnlockedCollateral, 4)} BTC`);
-  console.log(`延期订单数: ${formatWithCommas(stats.delayedStats.count, 0)}`);
-  console.log(`延期订单抵押 BTC: ${formatWithCommas(stats.delayedStats.collateral, 4)} BTC`);
+  console.log(`延期订单抵押 BTC: ${formatWithCommas(stats.delayedStats.collateral, 4)} BTC, 订单数量: ${stats.delayedStats.count}`);
   console.log(`延期订单 BTCD 数量: ${formatWithCommas(stats.delayedStats.tokenAmount, 2)}`);
-  console.log(`累计BTCD铸造总量: ${formatWithCommas(stats.totalTokenAmount, 2)}`);
+  console.log(`累计BTCD铸造总量（执行过借出的订单）: ${formatWithCommas(stats.totalBorrowedTokenAmount, 2)}`);
+  // console.log(`所有通过订单铸造的BTCD总量（包括未借出的）: ${formatWithCommas(stats.totalTokenAmount, 2)}`);
   console.log(`活跃订单铸造BTCD数量: ${formatWithCommas(stats.activeTokenAmount, 2)}`);
+  console.log(`当前借款中的BTCD数量: ${formatWithCommas(stats.currentBorrowed.tokenAmount, 2)}`);
+  console.log(`当前借款中的抵押 BTC: ${formatWithCommas(stats.currentBorrowed.collateral, 4)} BTC`);
   console.log(`订单铸造BTCD总量（活跃订单 + 已清算订单）: ${formatWithCommas(stats.currentMintedBTCD, 2)}`);
-  console.log(`锁定在订单中的BTCD总量: ${formatWithCommas(stats.lockedInOrdersBTCD, 2)}, 订单数量: ${stats.lockedInOrdersBTCDCount}`);
+  console.log(`锁定在订单中的BTCD总量: ${formatWithCommas(stats.lockedInOrdersBTCD, 2)}, 订单数量: ${stats.inactiveOrderCount}`);
+  console.log(`通过订单铸造的流通BTCD总量（已借出+已清算）: ${formatWithCommas(stats.currentMintedBTCD - stats.lockedInOrdersBTCD, 2)}`);
+
+  console.log(`\n===== 订单时长统计 =====`);
   console.log(`已还款订单的平均实际时长: ${stats.avgOrderPeriodStr}`);
   console.log(`已还款订单的平均实际时长 (大于10 BTCD): ${stats.avgOrderPeriodStrBiggerThan10}`);
   console.log(`已还款订单的平均实际时长 (大于1000 BTCD): ${stats.avgOrderPeriodStrBiggerThanxxx}`);
@@ -1745,11 +1765,42 @@ async function main() {
   console.log(`orderVersion>=3 有效订单利息总额（含延期支付的利息）: ${formatWithCommas(stats.orderVersion3TotalInterestValue, 2)}`);
   console.log(`orderVersion>=3 利息中应付给 PG (有效利息×6/7×70%): ${formatWithCommas(stats.orderVersion3InterestShareToPG, 2)}`);
   console.log(
-    `有效订单中 OBSIDIAN_ORDER 订单数: ${formatWithCommas(stats.obsidianOrder.count, 0)}；` +
+    `有效 OBSIDIAN_ORDER 订单数 (全部): ${formatWithCommas(stats.obsidianOrder.count, 0)}；` +
       `总铸造 BTCD: ${formatWithCommas(stats.obsidianOrder.totalTokenAmount, 2)}；` +
       `总质押 BTC: ${formatWithCommas(stats.obsidianOrder.totalCollateralBtc, 8)} BTC；` +
       `有效利息合计（含延期加计）: ${formatWithCommas(stats.obsidianOrder.totalEffectiveInterest, 2)}`
   );
+  console.log(
+    `大于10 BTCD 的有效 OBSIDIAN_ORDER 订单数: ${formatWithCommas(stats.obsidianOrderBiggerThan10.count, 0)}；` +
+      `总铸造 BTCD: ${formatWithCommas(stats.obsidianOrderBiggerThan10.totalTokenAmount, 2)}；` +
+      `总质押 BTC: ${formatWithCommas(stats.obsidianOrderBiggerThan10.totalCollateralBtc, 8)} BTC；` +
+      `有效利息合计（含延期加计）: ${formatWithCommas(stats.obsidianOrderBiggerThan10.totalEffectiveInterest, 2)}`
+  );
+
+  // 显示 OBSIDIAN_ORDER 订单统计，按订单BTC地址分类统计
+  console.log(`\n===== OBSIDIAN_ORDER 按订单 BTC 地址分类统计 =====`);
+  const obsidianByLenderBtcAddress = new Map<string, { totalCollateralBtc: number; totalTokenAmount: number; count: number }>();
+  allRecords
+    .filter(r => r.orderType === OrderType.ObsidianOrder && (r.details?.borrowedTime ?? 0) > 0)
+    .forEach(r => {
+      const addr = (r.details?.lenderBtcAddress || '').trim();
+      if (!addr) return;
+      const existing = obsidianByLenderBtcAddress.get(addr) ?? { totalCollateralBtc: 0, totalTokenAmount: 0, count: 0 };
+      existing.totalCollateralBtc += parseFloat(r.details?.realBtcAmount || '0');
+      existing.totalTokenAmount += parseFloat(r.tokenAmount || '0');
+      existing.count += 1;
+      obsidianByLenderBtcAddress.set(addr, existing);
+    });
+  Array.from(obsidianByLenderBtcAddress.entries())
+    .sort((a, b) => b[1].totalCollateralBtc - a[1].totalCollateralBtc)
+    .forEach(([address, stat], i) => {
+      console.log(
+        `  ${(i + 1).toString().padStart(2, ' ')}. 订单BTC地址: ${address}，` +
+          `总质押BTC: ${formatWithCommas(stat.totalCollateralBtc, 8)} BTC，` +
+          `总BTCD: ${formatWithCommas(stat.totalTokenAmount, 2)}，` +
+          `订单数: ${formatWithCommas(stat.count, 0)}`
+      );
+    });
 
   if (stats.firstOrderTime) {
     console.log(`\n时间范围:`);
@@ -1760,13 +1811,11 @@ async function main() {
   // 显示当前已借出统计
   console.log(`\n===== 当前已借出统计 =====`);
   console.log(`  订单数: ${formatWithCommas(stats.currentBorrowed.count, 0)}`);
-  console.log(`  抵押 BTC: ${formatWithCommas(stats.currentBorrowed.collateral, 8)} BTC`);
-  console.log(`  抵押 BTC (使用Discount): ${formatWithCommas(stats.currentBorrowed.collateralDiscount, 8)} BTC`);
+  console.log(`  抵押 BTC: ${formatWithCommas(stats.currentBorrowed.collateral, 8)} BTC，若全部使用Discount: ${formatWithCommas(stats.currentBorrowed.collateralDiscount, 8)} BTC`);
   console.log(`  BTCD 数量: ${formatWithCommas(stats.currentBorrowed.tokenAmount, 2)}`);
-  console.log(`  orderVersion=2 抵押 BTC: ${formatWithCommas(stats.currentBorrowed.orderVersion2.collateral, 8)} BTC`);
-  console.log(`  orderVersion=2 BTCD 数量: ${formatWithCommas(stats.currentBorrowed.orderVersion2.tokenAmount, 2)}`);
-  console.log(`  orderVersion>2 抵押 BTC: ${formatWithCommas(stats.currentBorrowed.orderVersionGt2.collateral, 8)} BTC`);
-  console.log(`  orderVersion>2 BTCD 数量: ${formatWithCommas(stats.currentBorrowed.orderVersionGt2.tokenAmount, 2)}`);
+  console.log(`  orderVersion<2 抵押 BTC: ${formatWithCommas(stats.currentBorrowed.orderVersion1.collateral, 8)} BTC， BTCD 数量: ${formatWithCommas(stats.currentBorrowed.orderVersion1.tokenAmount, 2)}`);
+  console.log(`  orderVersion=2 抵押 BTC: ${formatWithCommas(stats.currentBorrowed.orderVersion2.collateral, 8)} BTC， BTCD 数量: ${formatWithCommas(stats.currentBorrowed.orderVersion2.tokenAmount, 2)}`);
+  console.log(`  orderVersion>2 抵押 BTC: ${formatWithCommas(stats.currentBorrowed.orderVersionGt2.collateral, 8)} BTC， BTCD 数量: ${formatWithCommas(stats.currentBorrowed.orderVersionGt2.tokenAmount, 2)}`);
 
   // 显示已清算订单统计
   console.log(`\n===== 已清算订单统计 =====`);

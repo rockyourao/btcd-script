@@ -52,7 +52,8 @@ const MULTICALL_BATCH_SIZE = 200;
 /** 低余额阈值（原生币 */
 const LOW_BALANCE_THRESHOLD_ETH = '0.08';
 
-const MIN_DEADLINE_IN_SECONDS = 3600 * 24 * 370; // 360 天 + locktime 10天
+const MIN_DEADLINE_IN_SECONDS = 3600 * 24 * 90; // 90 天 + locktime 10天
+const MIN_DEADLINE_FOR_360_IN_SECONDS = 3600 * 24 * 370; // 360 天 + locktime 10天
 
 interface ArbitratorFromEvent {
   arbitrator: string;
@@ -558,13 +559,18 @@ async function main() {
 
   const activeArbitrators = records.filter(r => r.isActiveArbitrator);
   const inactiveArbitrators = records.filter(r => !r.isActiveArbitrator);
-  const deadlineArbitrators = records.filter(r => r.deadline > 0 && r.deadline < Date.now() / 1000 + MIN_DEADLINE_IN_SECONDS);
+  const deadlineArbitrators = records.filter(r => r.deadline > 0 && r.deadline < Date.now() / 1000 + MIN_DEADLINE_FOR_360_IN_SECONDS);
+  const deadlineNotEnoughArbitrators = records.filter(r => r.deadline > 0 && r.deadline < Date.now() / 1000 + MIN_DEADLINE_IN_SECONDS);
+
+  // sort by deadline descending
+  records.sort((a, b) => (b.deadline ?? 0) - (a.deadline ?? 0));
 
   console.log(`\n===== 守护者统计 =====`);
   console.log(`守护者总数: ${formatWithCommas(records.length, 0)}`);
   console.log(`活跃守护者: ${formatWithCommas(activeArbitrators.length, 0)}`);
   console.log(`非活跃守护者: ${formatWithCommas(inactiveArbitrators.length, 0)}`);
   console.log(`期限小于370天的守护者数量: ${formatWithCommas(deadlineArbitrators.length, 0)}`);
+  console.log(`期限小于100天的守护者数量: ${formatWithCommas(deadlineNotEnoughArbitrators.length, 0)}`);
   console.log(`低余额守护者: ${formatWithCommas(lowBalanceRecords.length, 0)}`);
   console.log(`守护者 PGA 余额合计: ${formatWithCommas(ethers.utils.formatEther(totalBalance), 4)}`);
   console.log(`守护者质押的 ELA 余额合计: ${formatWithCommas(ethers.utils.formatEther(totalStakeBalance), 4)}`);

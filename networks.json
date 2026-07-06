@@ -1,6 +1,6 @@
 {
   "eco-prod": {
-    "rpc_url": "https://api.elastos.cc/eco",
+    "rpc_url": "https://sknode.pgachain.org",
     "loan_contractaddress": "0xB932A221855ca54d6979Ff71ED4Cb0A8C4fb3797",
     "issuer_contractaddress": "0xD76d27c27bba3a84F32C96Cf5d8Eb81c130c4574",
     "stable_coin_contractaddress": "0x45ec25a63e010BFb84629242f40DDa187f83833E",
@@ -25,7 +25,7 @@
     "issuer_btc_address": "1AEXQ6Gtu61bXPZnuQPXtJhXoEkTXCfYfH",
     "arbitratorManager": "0x1f739Ce4238FF2B06D79D802Cb196aaE2025eae0",
     "start_block": 13329,
-    "batch_size": 50000,
+    "batch_size": 10000,
     "180order_start_time": 1769843920
   },
   "esc": {
