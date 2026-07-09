@@ -36,6 +36,8 @@ const MULTICALL3_ADDRESS = networkConfig[network].multicall3;
 const INITIAL_START_BLOCK = networkConfig[network].start_block;
 const BATCH_SIZE = networkConfig[network].batch_size;
 const RPC_URL = networkConfig[network].rpc_url;
+const BTCD_TOKEN_ADDRESS = networkConfig[network].stable_coin_contractaddress;
+const BTCD_TOKEN_DECIMALS = 18;
 // 可选：180 天订单统计起始时间（订单创建时间 >= 此时间的有效订单中，统计 limitedDays=180 占比）
 const ORDER_180_START_TIME = (networkConfig[network] as Record<string, number>)?.['180order_start_time'];
 
@@ -146,6 +148,7 @@ interface OrderDelayedEventItem {
     // | LEND      | 1       | Legacy order flow.                           |
     // | LEND      | 2       | Issuer flow removed; timeoutRepay supported. |
     // | LEND      | 3       | Issuer pre-mints principal + interest.       |
+    // | LEND      | 4       | same as 3                                    |
 
     // OBSIDIAN_ORDER version guide for frontend/backend routing:
     //
@@ -223,6 +226,47 @@ interface QueryOptions {
 
 // Multicall 批次大小
 const MULTICALL_BATCH_SIZE = 100;
+
+const erc20Interface = new ethers.utils.Interface(['function balanceOf(address owner) view returns (uint256)']);
+
+/** 通过 Multicall3 批量查询地址的 BTCD（ERC20）余额 */
+async function fetchBtcdBalances(provider: any, addresses: string[]): Promise<Map<string, number>> {
+  const balanceMap = new Map<string, number>();
+  const uniqueAddresses = [...new Set(addresses.map(a => a.toLowerCase()).filter(Boolean))];
+  if (uniqueAddresses.length === 0) return balanceMap;
+
+  const multicall3 = new ethers.Contract(MULTICALL3_ADDRESS, multicall3Abi, provider);
+  for (let i = 0; i < uniqueAddresses.length; i += MULTICALL_BATCH_SIZE) {
+    const batch = uniqueAddresses.slice(i, i + MULTICALL_BATCH_SIZE);
+    const calls = batch.map(addr => ({
+      target: BTCD_TOKEN_ADDRESS,
+      allowFailure: true,
+      callData: erc20Interface.encodeFunctionData('balanceOf', [addr])
+    }));
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const results = await multicall3.aggregate3(calls);
+        batch.forEach((addr, idx) => {
+          const result = results[idx];
+          if (result.success) {
+            const balance = erc20Interface.decodeFunctionResult('balanceOf', result.returnData)[0];
+            balanceMap.set(addr, parseFloat(ethers.utils.formatUnits(balance, BTCD_TOKEN_DECIMALS)));
+          } else {
+            balanceMap.set(addr, 0);
+          }
+        });
+        break;
+      } catch (error: any) {
+        if (attempt === 1) {
+          console.error(`获取 BTCD 余额批次 ${i} - ${i + batch.length} 失败:`, error.reason ?? error.message);
+          batch.forEach(addr => balanceMap.set(addr, 0));
+        }
+      }
+    }
+  }
+  return balanceMap;
+}
 
 /**
  * 将链上 uint256 转为 number。0、type(uint256).max 或超出 JS 安全整数时返回 0，
@@ -1688,6 +1732,7 @@ async function main() {
   console.log(`\n===== 最近逾期订单 =====`)
   const overdueOrders = allRecords.filter(r =>
     (r.details?.status === OrderStatus.BORROWED || r.details?.status === OrderStatus.CLOSED) &&
+    r.details?.borrowedTime > 0 &&
     r.details?.deadLinesData?.repayDeadLine > 0 &&
     r.details?.deadLinesData?.repayDeadLine < nowTimestamp &&
     !r.details?.borrowerRepaidTime
@@ -1699,7 +1744,7 @@ async function main() {
 
   console.log(`\n===== 最近将要逾期的订单 =====`)
   const toOverdueOrdersList = allRecords.filter(r => r.details?.status === OrderStatus.BORROWED && r.details?.deadLinesData?.repayDeadLine > nowTimestamp).sort((a, b) => a.details?.deadLinesData?.repayDeadLine - b.details?.deadLinesData?.repayDeadLine);
-  const toOverdueOrdersTop20 = toOverdueOrdersList.slice(0, 50);
+  const toOverdueOrdersTop20 = toOverdueOrdersList.slice(0, 20);
   toOverdueOrdersTop20.forEach((item, i) => {
     console.log(`  ${i + 1}. ${item.orderId} 还款时间: ${timestampToStr(item.details?.deadLinesData?.repayDeadLine)}, BTCD数量: ${formatWithCommas(item.tokenAmount, 2)} BTC 价格: ${formatWithCommas(item.btcPrice, 2)} 版本: ${item.details?.orderVersion}`);
   });
@@ -1767,37 +1812,54 @@ async function main() {
   console.log(
     `有效 OBSIDIAN_ORDER 订单数 (全部): ${formatWithCommas(stats.obsidianOrder.count, 0)}；` +
       `总铸造 BTCD: ${formatWithCommas(stats.obsidianOrder.totalTokenAmount, 2)}；` +
-      `总质押 BTC: ${formatWithCommas(stats.obsidianOrder.totalCollateralBtc, 8)} BTC；` +
+      `总质押 BTC: ${formatWithCommas(stats.obsidianOrder.totalCollateralBtc, 4)} BTC；` +
       `有效利息合计（含延期加计）: ${formatWithCommas(stats.obsidianOrder.totalEffectiveInterest, 2)}`
   );
   console.log(
     `大于10 BTCD 的有效 OBSIDIAN_ORDER 订单数: ${formatWithCommas(stats.obsidianOrderBiggerThan10.count, 0)}；` +
       `总铸造 BTCD: ${formatWithCommas(stats.obsidianOrderBiggerThan10.totalTokenAmount, 2)}；` +
-      `总质押 BTC: ${formatWithCommas(stats.obsidianOrderBiggerThan10.totalCollateralBtc, 8)} BTC；` +
+      `总质押 BTC: ${formatWithCommas(stats.obsidianOrderBiggerThan10.totalCollateralBtc, 4)} BTC；` +
       `有效利息合计（含延期加计）: ${formatWithCommas(stats.obsidianOrderBiggerThan10.totalEffectiveInterest, 2)}`
   );
 
   // 显示 OBSIDIAN_ORDER 订单统计，按订单BTC地址分类统计
   console.log(`\n===== OBSIDIAN_ORDER 按订单 BTC 地址分类统计 =====`);
-  const obsidianByLenderBtcAddress = new Map<string, { totalCollateralBtc: number; totalTokenAmount: number; count: number }>();
-  allRecords
-    .filter(r => r.orderType === OrderType.ObsidianOrder && (r.details?.borrowedTime ?? 0) > 0)
-    .forEach(r => {
-      const addr = (r.details?.lenderBtcAddress || '').trim();
-      if (!addr) return;
-      const existing = obsidianByLenderBtcAddress.get(addr) ?? { totalCollateralBtc: 0, totalTokenAmount: 0, count: 0 };
-      existing.totalCollateralBtc += parseFloat(r.details?.realBtcAmount || '0');
-      existing.totalTokenAmount += parseFloat(r.tokenAmount || '0');
-      existing.count += 1;
-      obsidianByLenderBtcAddress.set(addr, existing);
-    });
+  const obsidianValidRecords = allRecords.filter(
+    r => r.orderType === OrderType.ObsidianOrder && (r.details?.borrowedTime ?? 0) > 0
+  );
+  const uniqueObsidianBorrowers = [
+    ...new Set(
+      obsidianValidRecords
+        .map(r => (r.details?.borrower || '').toLowerCase())
+        .filter(b => b && b !== ZERO_ADDRESS)
+    )
+  ];
+  console.log(`正在查询 ${uniqueObsidianBorrowers.length} 个 borrower 地址的 BTCD 链上余额...`);
+  const borrowerBtcdBalance = await fetchBtcdBalances(provider, uniqueObsidianBorrowers);
+  const obsidianByLenderBtcAddress = new Map<string, { totalCollateralBtc: number; totalTokenAmount: number; count: number; borrowers: Set<string> }>();
+  obsidianValidRecords.forEach(r => {
+    const addr = (r.details?.lenderBtcAddress || '').trim();
+    if (!addr) return;
+    const existing = obsidianByLenderBtcAddress.get(addr) ?? { totalCollateralBtc: 0, totalTokenAmount: 0, count: 0, borrowers: new Set<string>() };
+    existing.totalCollateralBtc += parseFloat(r.details?.realBtcAmount || '0');
+    existing.totalTokenAmount += parseFloat(r.tokenAmount || '0');
+    existing.count += 1;
+    const borrower = (r.details?.borrower || '').toLowerCase();
+    if (borrower && borrower !== ZERO_ADDRESS) existing.borrowers.add(borrower);
+    obsidianByLenderBtcAddress.set(addr, existing);
+  });
   Array.from(obsidianByLenderBtcAddress.entries())
     .sort((a, b) => b[1].totalCollateralBtc - a[1].totalCollateralBtc)
     .forEach(([address, stat], i) => {
+      const borrowerTotalBtcd = Array.from(stat.borrowers).reduce(
+        (sum, b) => sum + (borrowerBtcdBalance.get(b) ?? 0),
+        0
+      );
       console.log(
         `  ${(i + 1).toString().padStart(2, ' ')}. 订单BTC地址: ${address}，` +
           `总质押BTC: ${formatWithCommas(stat.totalCollateralBtc, 8)} BTC，` +
           `总BTCD: ${formatWithCommas(stat.totalTokenAmount, 2)}，` +
+          `borrower持有BTCD: ${formatWithCommas(borrowerTotalBtcd, 2)}，` +
           `订单数: ${formatWithCommas(stat.count, 0)}`
       );
     });
@@ -1828,6 +1890,11 @@ async function main() {
   console.log(`  订单数: ${formatWithCommas(stats.overdueStats.count, 0)}`);
   console.log(`  抵押 BTC: ${formatWithCommas(stats.overdueStats.collateral, 8)} BTC`);
   console.log(`  BTCD数量: ${formatWithCommas(stats.overdueStats.tokenAmount, 2)}`);
+
+  // OrderVersion < 2
+  console.log(`\n===== OrderVersion < 2 的订单数量 =====`);
+  console.log(`  订单数: ${formatWithCommas(allRecords.filter(r => r.details?.orderVersion < 2).length, 0)}`);
+  console.log(`  已关闭订单数: ${formatWithCommas(allRecords.filter(r => r.details?.orderVersion < 2 && r.details?.status === OrderStatus.CLOSED).length, 0)}`);
 
   // OrderVersion = 2
   console.log(`\n===== OrderVersion = 2 的订单数量 =====`);
