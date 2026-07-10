@@ -1879,6 +1879,20 @@ async function main() {
   console.log(`  orderVersion=2 抵押 BTC: ${formatWithCommas(stats.currentBorrowed.orderVersion2.collateral, 8)} BTC， BTCD 数量: ${formatWithCommas(stats.currentBorrowed.orderVersion2.tokenAmount, 2)}`);
   console.log(`  orderVersion>2 抵押 BTC: ${formatWithCommas(stats.currentBorrowed.orderVersionGt2.collateral, 8)} BTC， BTCD 数量: ${formatWithCommas(stats.currentBorrowed.orderVersionGt2.tokenAmount, 2)}`);
 
+  const borrowedLargeCollateralOrders = allRecords.filter(
+    r => r.details?.status === OrderStatus.BORROWED && parseFloat(r.details?.realBtcAmount || '0') > 0.8
+  );
+  const borrowedLargeCollateralBtcSum = borrowedLargeCollateralOrders.reduce(
+    (sum, r) => sum + parseFloat(r.details?.realBtcAmount || '0'), 0
+  );
+  const borrowedLargeCollateralBtcdSum = borrowedLargeCollateralOrders.reduce(
+    (sum, r) => sum + parseFloat(r.tokenAmount || '0'), 0
+  );
+  console.log(`\n===== 已借出订单中 质押 BTC > 0.8 的汇总 =====`);
+  console.log(`  订单数量: ${formatWithCommas(borrowedLargeCollateralOrders.length, 0)}`);
+  console.log(`  质押 BTC 总和: ${formatWithCommas(borrowedLargeCollateralBtcSum, 4)} BTC`);
+  console.log(`  BTCD 总和: ${formatWithCommas(borrowedLargeCollateralBtcdSum, 2)}`);
+
   // 显示已清算订单统计
   console.log(`\n===== 已清算订单统计 =====`);
   console.log(`  订单数: ${formatWithCommas(stats.liquidatedStats.count, 0)}`);
