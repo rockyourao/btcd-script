@@ -1132,28 +1132,46 @@ function computeDerivedOrderLists(allRecords: OrderRecord[], nowTimestamp: numbe
 }
 
 function computeOverdueRankings(alloverdueOrders: OrderRecord[]): {
-  overdueRankByBorrower: { address: string; count: number }[];
-  overdueRankByBorrowerBtcAddress: { address: string; count: number }[];
+  overdueRankByBorrower: { address: string; count: number; totalTokenAmount: number; totalRealBtcAmount: number }[];
+  overdueRankByBorrowerBtcAddress: { address: string; count: number; totalTokenAmount: number; totalRealBtcAmount: number }[];
+  overdueRankByBtcAmount: { address: string; count: number; totalTokenAmount: number; totalRealBtcAmount: number }[];
 } {
-  const overdueCountByBorrower = new Map<string, number>();
+  type OverdueAgg = { count: number; totalTokenAmount: number; totalRealBtcAmount: number };
+  const emptyAgg = (): OverdueAgg => ({ count: 0, totalTokenAmount: 0, totalRealBtcAmount: 0 });
+
+  const overdueCountByBorrower = new Map<string, OverdueAgg>();
   for (const r of alloverdueOrders) {
     const addr = (r.details!.borrower || '').toLowerCase();
-    if (addr) overdueCountByBorrower.set(addr, (overdueCountByBorrower.get(addr) ?? 0) + 1);
+    if (!addr) continue;
+    const existing = overdueCountByBorrower.get(addr) ?? emptyAgg();
+    existing.count += 1;
+    existing.totalTokenAmount += parseFloat(r.tokenAmount || '0');
+    existing.totalRealBtcAmount += parseFloat(r.details?.realBtcAmount || '0');
+    overdueCountByBorrower.set(addr, existing);
   }
   const overdueRankByBorrower = [...overdueCountByBorrower.entries()]
-    .map(([address, count]) => ({ address, count }))
+    .map(([address, agg]) => ({ address, ...agg }))
     .sort((a, b) => b.count - a.count);
 
-  const overdueCountByBtcAddress = new Map<string, number>();
+  const overdueCountByBtcAddress = new Map<string, OverdueAgg>();
   for (const r of alloverdueOrders) {
     const addr = (r.details!.borrowerBtcAddress || '').trim();
-    if (addr) overdueCountByBtcAddress.set(addr, (overdueCountByBtcAddress.get(addr) ?? 0) + 1);
+    if (!addr) continue;
+    const existing = overdueCountByBtcAddress.get(addr) ?? emptyAgg();
+    existing.count += 1;
+    existing.totalTokenAmount += parseFloat(r.tokenAmount || '0');
+    existing.totalRealBtcAmount += parseFloat(r.details?.realBtcAmount || '0');
+    overdueCountByBtcAddress.set(addr, existing);
   }
   const overdueRankByBorrowerBtcAddress = [...overdueCountByBtcAddress.entries()]
-    .map(([address, count]) => ({ address, count }))
+    .map(([address, agg]) => ({ address, ...agg }))
     .sort((a, b) => b.count - a.count);
 
-  return { overdueRankByBorrower, overdueRankByBorrowerBtcAddress };
+  const overdueRankByBtcAmount = [...overdueCountByBtcAddress.entries()]
+    .map(([address, agg]) => ({ address, ...agg }))
+    .sort((a, b) => b.totalRealBtcAmount - a.totalRealBtcAmount);
+
+  return { overdueRankByBorrower, overdueRankByBorrowerBtcAddress, overdueRankByBtcAmount };
 }
 
 function computeLimitedDays180AfterStart(allRecords: OrderRecord[]): {
@@ -1538,8 +1556,11 @@ function computeUserStats(allRecords: OrderRecord[]): {
   const totalBTCUsers = uniqueBTCUsers.size;
   const btcuserOrderCount = new Map<string, number>();
   userOrders.forEach(r => {
-    const user = r.details!.borrowerBtcAddress.toLowerCase();
+    let user = r.details!.borrowerBtcAddress.toLowerCase();
     // the borrowerBtcAddress is empty if the order is obsidian order
+    if (!user) {
+      user = r.details!.lenderBtcAddress.toLowerCase();
+    }
     btcuserOrderCount.set(user, (btcuserOrderCount.get(user) || 0) + 1);
   });
   const btcuserOrderRanking = Array.from(btcuserOrderCount.entries())
@@ -1670,19 +1691,37 @@ async function main() {
 
   const overdueRankBorrowerTop10 = overdueRanks.overdueRankByBorrower.slice(0, 10);
   const overdueRankBtcTop10 = overdueRanks.overdueRankByBorrowerBtcAddress.slice(0, 10);
+  const overdueRankBtcAmountTop10 = overdueRanks.overdueRankByBtcAmount.slice(0, 10);
   if (overdueRankBorrowerTop10.length > 0) {
     console.log(`\n过期排行 Top10 (EVM 用户 borrower):`);
     overdueRankBorrowerTop10.forEach((item, i) => {
-      console.log(`  ${i + 1}. ${item.address} 过期订单数: ${item.count}`);
+      console.log(
+        `  ${i + 1}. ${item.address} 过期订单数: ${item.count}, ` +
+          `BTCD: ${formatWithCommas(item.totalTokenAmount, 2)}, ` +
+          `质押BTC: ${formatWithCommas(item.totalRealBtcAmount, 4)} BTC`
+      );
     });
   }
   if (overdueRankBtcTop10.length > 0) {
     console.log(`\n过期排行 Top10 (BTC 用户 borrowerBtcAddress):`);
     overdueRankBtcTop10.forEach((item, i) => {
-      console.log(`  ${i + 1}. ${item.address} 过期订单数: ${item.count}`);
+      console.log(
+        `  ${i + 1}. ${item.address} 过期订单数: ${item.count}, ` +
+          `BTCD: ${formatWithCommas(item.totalTokenAmount, 2)}, ` +
+          `质押BTC: ${formatWithCommas(item.totalRealBtcAmount, 4)} BTC`
+      );
     });
   }
-
+  if (overdueRankBtcAmountTop10.length > 0) {
+    console.log(`\n过期排行 Top10 (质押的 BTC):`);
+    overdueRankBtcAmountTop10.forEach((item, i) => {
+      console.log(
+        `  ${i + 1}. ${item.address} 过期订单数: ${item.count}, ` +
+          `BTCD: ${formatWithCommas(item.totalTokenAmount, 2)}, ` +
+          `质押BTC: ${formatWithCommas(item.totalRealBtcAmount, 4)} BTC`
+      );
+    });
+  }
   // console.log(`\n===== 所有订单质押 BTC 排行 Top10 =====`);
   // const collateralRankTop10 = allRecords.sort((a, b) => parseFloat(b.details?.realBtcAmount) - parseFloat(a.details?.realBtcAmount)).slice(0, 10);
   // collateralRankTop10.forEach((item, i) => {
@@ -1691,8 +1730,8 @@ async function main() {
   //   `);
   // });
 
-  console.log(`\n===== 已借出订单质押 BTC 排行 Top50 =====`);
-  const borrowedCollateralRankTop10 = allRecords.filter(r => r.details?.status === OrderStatus.BORROWED).sort((a, b) => parseFloat(b.details?.realBtcAmount) - parseFloat(a.details?.realBtcAmount)).slice(0, 50);
+  console.log(`\n===== 已借出订单质押 BTC 排行 Top10 =====`);
+  const borrowedCollateralRankTop10 = allRecords.filter(r => r.details?.status === OrderStatus.BORROWED).sort((a, b) => parseFloat(b.details?.realBtcAmount) - parseFloat(a.details?.realBtcAmount)).slice(0, 10);
   borrowedCollateralRankTop10.forEach((item, i) => {
     console.log(`  ${i + 1}. 订单ID: ${item.orderId}, 质押BTC: ${formatWithCommas(item.details?.realBtcAmount, 2)} BTC, ${formatWithCommas(item.tokenAmount, 2)} BTCD, BTC地址: ${item.details?.borrowerBtcAddress}
     订单BTC地址: ${item.details?.lenderBtcAddress} EVM地址: ${item.details?.borrower}
@@ -1875,9 +1914,9 @@ async function main() {
   console.log(`  订单数: ${formatWithCommas(stats.currentBorrowed.count, 0)}`);
   console.log(`  抵押 BTC: ${formatWithCommas(stats.currentBorrowed.collateral, 8)} BTC，若全部使用Discount: ${formatWithCommas(stats.currentBorrowed.collateralDiscount, 8)} BTC`);
   console.log(`  BTCD 数量: ${formatWithCommas(stats.currentBorrowed.tokenAmount, 2)}`);
-  console.log(`  orderVersion<2 抵押 BTC: ${formatWithCommas(stats.currentBorrowed.orderVersion1.collateral, 8)} BTC， BTCD 数量: ${formatWithCommas(stats.currentBorrowed.orderVersion1.tokenAmount, 2)}`);
-  console.log(`  orderVersion=2 抵押 BTC: ${formatWithCommas(stats.currentBorrowed.orderVersion2.collateral, 8)} BTC， BTCD 数量: ${formatWithCommas(stats.currentBorrowed.orderVersion2.tokenAmount, 2)}`);
-  console.log(`  orderVersion>2 抵押 BTC: ${formatWithCommas(stats.currentBorrowed.orderVersionGt2.collateral, 8)} BTC， BTCD 数量: ${formatWithCommas(stats.currentBorrowed.orderVersionGt2.tokenAmount, 2)}`);
+  console.log(`  orderVersion<2 抵押 BTC: ${formatWithCommas(stats.currentBorrowed.orderVersion1.collateral, 4)} BTC， BTCD 数量: ${formatWithCommas(stats.currentBorrowed.orderVersion1.tokenAmount, 2)}`);
+  console.log(`  orderVersion=2 抵押 BTC: ${formatWithCommas(stats.currentBorrowed.orderVersion2.collateral, 4)} BTC， BTCD 数量: ${formatWithCommas(stats.currentBorrowed.orderVersion2.tokenAmount, 2)}`);
+  console.log(`  orderVersion>2 抵押 BTC: ${formatWithCommas(stats.currentBorrowed.orderVersionGt2.collateral, 4)} BTC， BTCD 数量: ${formatWithCommas(stats.currentBorrowed.orderVersionGt2.tokenAmount, 2)}`);
 
   const borrowedLargeCollateralOrders = allRecords.filter(
     r => r.details?.status === OrderStatus.BORROWED && parseFloat(r.details?.realBtcAmount || '0') > 0.8
@@ -1888,7 +1927,7 @@ async function main() {
   const borrowedLargeCollateralBtcdSum = borrowedLargeCollateralOrders.reduce(
     (sum, r) => sum + parseFloat(r.tokenAmount || '0'), 0
   );
-  console.log(`\n===== 已借出订单中 质押 BTC > 0.8 的汇总 =====`);
+  console.log(`\n===== 已借出订单中 质押 BTC > 0.8 的统计 =====`);
   console.log(`  订单数量: ${formatWithCommas(borrowedLargeCollateralOrders.length, 0)}`);
   console.log(`  质押 BTC 总和: ${formatWithCommas(borrowedLargeCollateralBtcSum, 4)} BTC`);
   console.log(`  BTCD 总和: ${formatWithCommas(borrowedLargeCollateralBtcdSum, 2)}`);
