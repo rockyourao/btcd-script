@@ -1292,6 +1292,20 @@ function buildOrderStats(
     })
     .reduce((sum, r) => sum + interestOf(r), 0) / 6;
 
+  const createdStatusOrders = allRecords.filter(r => r.details?.status === OrderStatus.CREATED);
+  const takenStatusOrders = allRecords.filter(r => r.details?.status === OrderStatus.TAKEN);
+  const borrowerProofSubmittedStatusOrders = allRecords.filter(r => r.details?.status === OrderStatus.BORROWER_PROOF_SUBMITTED);
+  const borrowerPayArbitratorSubmittedStatusOrders = allRecords.filter(r => r.details?.status === OrderStatus.BORROWER_PAY_ARBITRATOR_SUBMITTED);
+  const borrowedStatusOrders = allRecords.filter(r => r.details?.status === OrderStatus.BORROWED);
+  const repaidStatusOrders = allRecords.filter(r => r.details?.status === OrderStatus.REPAID);
+  const lenderProofSubmittedStatusOrders = allRecords.filter(r => r.details?.status === OrderStatus.LENDER_PROOF_SUBMITTED);
+  const lenderPaymentConfirmedStatusOrders = allRecords.filter(r => r.details?.status === OrderStatus.LENDER_PAYMENT_CONFIRMED);
+  const arbitrationRequestedStatusOrders = allRecords.filter(r => r.details?.status === OrderStatus.ARBITRATION_REQUESTED);
+  const closedStatusOrders = allRecords.filter(r => r.details?.status === OrderStatus.CLOSED);
+  const timeoutRepaymentStatusOrders = allRecords.filter(r => r.details?.status === OrderStatus.TIMEOUT_REPAYMENT);
+  const renewalOrderRequestedStatusOrders = allRecords.filter(r => r.details?.status === OrderStatus.RENEWAL_ORDER_REQUESTED);
+  const increaseOrderRequestedStatusOrders = allRecords.filter(r => r.details?.status === OrderStatus.INCREASE_ORDER_REQUESTED);
+
   return {
     totalOrders: allRecords.length,
     validOrders: validOrdersList.length,
@@ -1384,19 +1398,68 @@ function buildOrderStats(
       tokenAmount: timeoutRepaymentOrders.reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0)
     },
     statusStats: {
-      created: allRecords.filter(r => r.details?.status === OrderStatus.CREATED).length,
-      taken: allRecords.filter(r => r.details?.status === OrderStatus.TAKEN).length,
-      borrowerProofSubmitted: allRecords.filter(r => r.details?.status === OrderStatus.BORROWER_PROOF_SUBMITTED).length,
-      borrowerPayArbitratorSubmitted: allRecords.filter(r => r.details?.status === OrderStatus.BORROWER_PAY_ARBITRATOR_SUBMITTED).length,
-      borrowed: borrowedOrders.length,
-      repaid: derived.repaidOrders.length,
-      lenderProofSubmitted: allRecords.filter(r => r.details?.status === OrderStatus.LENDER_PROOF_SUBMITTED).length,
-      lenderPaymentConfirmed: allRecords.filter(r => r.details?.status === OrderStatus.LENDER_PAYMENT_CONFIRMED).length,
-      arbitrationRequested: allRecords.filter(r => r.details?.status === OrderStatus.ARBITRATION_REQUESTED).length,
-      closed: allRecords.filter(r => r.details?.status === OrderStatus.CLOSED).length,
-      timeoutRepayment: allRecords.filter(r => r.details?.status === OrderStatus.TIMEOUT_REPAYMENT).length,
-      renewalOrderRequested: allRecords.filter(r => r.details?.status === OrderStatus.RENEWAL_ORDER_REQUESTED).length,
-      increaseOrderRequested: allRecords.filter(r => r.details?.status === OrderStatus.INCREASE_ORDER_REQUESTED).length,
+      created: {
+        count: createdStatusOrders.length,
+        tokenAmount: createdStatusOrders.reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0)
+      },
+      taken: {
+        count: takenStatusOrders.length,
+        tokenAmount: takenStatusOrders.reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0)
+      },
+      borrowerProofSubmitted: {
+        count: borrowerProofSubmittedStatusOrders.length,
+        collateral: borrowerProofSubmittedStatusOrders.reduce((sum, r) => sum + parseFloat(r.details.realBtcAmount), 0),
+        tokenAmount: borrowerProofSubmittedStatusOrders.reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0)
+      },
+      borrowerPayArbitratorSubmitted: {
+        count: borrowerPayArbitratorSubmittedStatusOrders.length,
+        collateral: borrowerPayArbitratorSubmittedStatusOrders.reduce((sum, r) => sum + parseFloat(r.details.realBtcAmount), 0),
+        tokenAmount: borrowerPayArbitratorSubmittedStatusOrders.reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0)
+      },
+      borrowed: {
+        count: borrowedStatusOrders.length,
+        collateral: borrowedStatusOrders.reduce((sum, r) => sum + parseFloat(r.details.realBtcAmount), 0),
+        tokenAmount: borrowedStatusOrders.reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0)
+      },
+      repaid: {
+        count: repaidStatusOrders.length,
+        collateral: repaidStatusOrders.reduce((sum, r) => sum + parseFloat(r.details.realBtcAmount), 0),
+        tokenAmount: repaidStatusOrders.reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0)
+      },
+      lenderProofSubmitted: {
+        count: lenderProofSubmittedStatusOrders.length,
+        collateral: lenderProofSubmittedStatusOrders.reduce((sum, r) => sum + parseFloat(r.details.realBtcAmount), 0),
+        tokenAmount: lenderProofSubmittedStatusOrders.reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0)
+      },
+      lenderPaymentConfirmed: {
+        count: lenderPaymentConfirmedStatusOrders.length,
+        collateral: lenderPaymentConfirmedStatusOrders.reduce((sum, r) => sum + parseFloat(r.details.realBtcAmount), 0),
+        tokenAmount: lenderPaymentConfirmedStatusOrders.reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0)
+      },
+      arbitrationRequested: {
+        count: arbitrationRequestedStatusOrders.length,
+        collateral: arbitrationRequestedStatusOrders.reduce((sum, r) => sum + parseFloat(r.details.realBtcAmount), 0),
+        tokenAmount: arbitrationRequestedStatusOrders.reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0)
+      },
+      closed: {
+        count: closedStatusOrders.length,
+        tokenAmount: closedStatusOrders.reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0)
+      },
+      timeoutRepayment: {
+        count: timeoutRepaymentStatusOrders.length,
+        collateral: timeoutRepaymentStatusOrders.reduce((sum, r) => sum + parseFloat(r.details.realBtcAmount), 0),
+        tokenAmount: timeoutRepaymentStatusOrders.reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0)
+      },
+      renewalOrderRequested: {
+        count: renewalOrderRequestedStatusOrders.length,
+        collateral: renewalOrderRequestedStatusOrders.reduce((sum, r) => sum + parseFloat(r.details.realBtcAmount), 0),
+        tokenAmount: renewalOrderRequestedStatusOrders.reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0)
+      },
+      increaseOrderRequested: {
+        count: increaseOrderRequestedStatusOrders.length,
+        collateral: increaseOrderRequestedStatusOrders.reduce((sum, r) => sum + parseFloat(r.details.realBtcAmount), 0),
+        tokenAmount: increaseOrderRequestedStatusOrders.reduce((sum, r) => sum + parseFloat(r.tokenAmount), 0)
+      },
       liquidated: liquidatedOrders.length
     }
   };
@@ -1783,7 +1846,7 @@ async function main() {
 
   console.log(`\n===== 最近将要逾期的订单 =====`)
   const toOverdueOrdersList = allRecords.filter(r => r.details?.status === OrderStatus.BORROWED && r.details?.deadLinesData?.repayDeadLine > nowTimestamp).sort((a, b) => a.details?.deadLinesData?.repayDeadLine - b.details?.deadLinesData?.repayDeadLine);
-  const toOverdueOrdersTop20 = toOverdueOrdersList.slice(0, 20);
+  const toOverdueOrdersTop20 = toOverdueOrdersList.slice(0, 10);
   toOverdueOrdersTop20.forEach((item, i) => {
     console.log(`  ${i + 1}. ${item.orderId} 还款时间: ${timestampToStr(item.details?.deadLinesData?.repayDeadLine)}, BTCD数量: ${formatWithCommas(item.tokenAmount, 2)} BTC 价格: ${formatWithCommas(item.btcPrice, 2)} 版本: ${item.details?.orderVersion}`);
   });
@@ -1973,19 +2036,19 @@ async function main() {
 
   // 显示状态统计
   console.log(`\n===== 订单状态分布 =====`);
-  console.log(`  CREATED (已创建): ${formatWithCommas(stats.statusStats.created, 0)}`);
-  console.log(`  TAKEN (已接单): ${formatWithCommas(stats.statusStats.taken, 0)}`);
-  console.log(`  BORROWER_PROOF_SUBMITTED (借款人已提交BTC锁定证明): ${formatWithCommas(stats.statusStats.borrowerProofSubmitted, 0)}`);
-  console.log(`  BORROWER_PAY_ARBITRATOR_SUBMITTED (借款人已提交仲裁员费用证明): ${formatWithCommas(stats.statusStats.borrowerPayArbitratorSubmitted, 0)}`);
-  console.log(`  BORROWED (已借款): ${formatWithCommas(stats.statusStats.borrowed, 0)}`);
-  console.log(`  REPAID (已还款): ${formatWithCommas(stats.statusStats.repaid, 0)}`);
-  console.log(`  LENDER_PROOF_SUBMITTED (出借人已提交还款证明): ${formatWithCommas(stats.statusStats.lenderProofSubmitted, 0)}`);
-  console.log(`  LENDER_PAYMENT_CONFIRMED (出借人付款已确认): ${formatWithCommas(stats.statusStats.lenderPaymentConfirmed, 0)}`);
-  console.log(`  ARBITRATION_REQUESTED (已请求仲裁): ${formatWithCommas(stats.statusStats.arbitrationRequested, 0)}`);
-  console.log(`  CLOSED (已关闭): ${formatWithCommas(stats.statusStats.closed, 0)}`);
-  console.log(`  TIMEOUT_REPAYMENT (超时还款): ${formatWithCommas(stats.statusStats.timeoutRepayment, 0)}`);
-  console.log(`  RENEWAL_ORDER_REQUESTED (已请求续期): ${formatWithCommas(stats.statusStats.renewalOrderRequested, 0)}`);
-  console.log(`  INCREASE_ORDER_REQUESTED (已请求增贷): ${formatWithCommas(stats.statusStats.increaseOrderRequested, 0)}`);
+  console.log(`  CREATED (已创建): ${formatWithCommas(stats.statusStats.created.count, 0)}, BTCD数量: ${formatWithCommas(stats.statusStats.created.tokenAmount, 2)}`);
+  console.log(`  TAKEN (已接单): ${formatWithCommas(stats.statusStats.taken.count, 0)}, BTCD数量: ${formatWithCommas(stats.statusStats.taken.tokenAmount, 2)}`);
+  console.log(`  BORROWER_PROOF_SUBMITTED (借款人已提交BTC锁定证明): ${formatWithCommas(stats.statusStats.borrowerProofSubmitted.count, 0)}`);
+  console.log(`  BORROWER_PAY_ARBITRATOR_SUBMITTED (借款人已提交仲裁员费用证明): ${formatWithCommas(stats.statusStats.borrowerPayArbitratorSubmitted.count, 0)}`);
+  console.log(`  BORROWED (已借款): ${formatWithCommas(stats.statusStats.borrowed.count, 0)}, 抵押 BTC: ${formatWithCommas(stats.statusStats.borrowed.collateral, 8)} BTC, BTCD数量: ${formatWithCommas(stats.statusStats.borrowed.tokenAmount, 2)}`);
+  console.log(`  REPAID (已还款): ${formatWithCommas(stats.statusStats.repaid.count, 0)}, 抵押 BTC: ${formatWithCommas(stats.statusStats.repaid.collateral, 8)} BTC, BTCD数量: ${formatWithCommas(stats.statusStats.repaid.tokenAmount, 2)}`);
+  console.log(`  LENDER_PROOF_SUBMITTED (出借人已提交还款证明): ${formatWithCommas(stats.statusStats.lenderProofSubmitted.count, 0)}`);
+  console.log(`  LENDER_PAYMENT_CONFIRMED (出借人付款已确认): ${formatWithCommas(stats.statusStats.lenderPaymentConfirmed.count, 0)}`);
+  console.log(`  ARBITRATION_REQUESTED (已请求仲裁): ${formatWithCommas(stats.statusStats.arbitrationRequested.count, 0)}`);
+  console.log(`  CLOSED (已关闭): ${formatWithCommas(stats.statusStats.closed.count, 0)}`);
+  console.log(`  TIMEOUT_REPAYMENT (超时还款): ${formatWithCommas(stats.statusStats.timeoutRepayment.count, 0)}`);
+  console.log(`  RENEWAL_ORDER_REQUESTED (已请求续期): ${formatWithCommas(stats.statusStats.renewalOrderRequested.count, 0)}`);
+  console.log(`  INCREASE_ORDER_REQUESTED (已请求增贷): ${formatWithCommas(stats.statusStats.increaseOrderRequested.count, 0)}`);
   console.log(`  LIQUIDATED (已清算): ${formatWithCommas(stats.statusStats.liquidated, 0)}`);
 
 

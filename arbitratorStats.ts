@@ -560,6 +560,7 @@ async function main() {
   const activeArbitrators = records.filter(r => r.isActiveArbitrator);
   const inactiveArbitrators = records.filter(r => !r.isActiveArbitrator);
   const deadlineArbitrators = records.filter(r => r.deadline > 0 && r.deadline < Date.now() / 1000 + MIN_DEADLINE_FOR_360_IN_SECONDS);
+  const deadlineActiveArbitrators = records.filter(r => r.isActiveArbitrator && r.deadline > 0 && r.deadline < Date.now() / 1000 + MIN_DEADLINE_FOR_360_IN_SECONDS);
   const deadlineNotEnoughArbitrators = records.filter(r => r.deadline > 0 && r.deadline < Date.now() / 1000 + MIN_DEADLINE_IN_SECONDS);
 
   // sort by deadline descending
@@ -569,7 +570,7 @@ async function main() {
   console.log(`守护者总数: ${formatWithCommas(records.length, 0)}`);
   console.log(`活跃守护者: ${formatWithCommas(activeArbitrators.length, 0)}`);
   console.log(`非活跃守护者: ${formatWithCommas(inactiveArbitrators.length, 0)}`);
-  console.log(`期限小于370天的守护者数量: ${formatWithCommas(deadlineArbitrators.length, 0)}`);
+  console.log(`期限小于370天的守护者数量: ${formatWithCommas(deadlineArbitrators.length, 0)}, 其中活跃守护者: ${formatWithCommas(deadlineActiveArbitrators.length, 0)}`);
   console.log(`期限小于100天的守护者数量: ${formatWithCommas(deadlineNotEnoughArbitrators.length, 0)}`);
   console.log(`低余额守护者: ${formatWithCommas(lowBalanceRecords.length, 0)}`);
   console.log(`守护者 PGA 余额合计: ${formatWithCommas(ethers.utils.formatEther(totalBalance), 4)}`);
