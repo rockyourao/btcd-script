@@ -7,6 +7,7 @@
  *   - Mint(加流动性): 同时转入 BTCD + USDT
  *   - Burn(撤流动性): 同时转出 BTCD + USDT
  *   - 超额取出: 按用户累计 Burn > Mint 的差额（运营/做市超额提取）
+ *   - 用户排行: 提供/取走（Mint|Burn + Skipped 单边）与 Swap 总量
  *   - Skipped: 未归入以上类别的 Transfer 交易（单边注资/复杂路径等）
  *   - 对账: Pair 链上余额 vs 隐含余额（Mint−Burn+Swap净[+Skipped净]）
  *
@@ -205,6 +206,52 @@ interface LiquidityFile {
   skipped?: SkippedRecord[];
   excessWithdrawal?: ExcessWithdrawalFileStats;
   balanceReconcile?: BalanceReconcileStats;
+  rankings?: UserRankingsFile;
+}
+
+interface UserLiquidityFlowAgg {
+  user: string;
+  provideBtcd: number;
+  provideUsdt: number;
+  provideCount: number;
+  withdrawBtcd: number;
+  withdrawUsdt: number;
+  withdrawCount: number;
+  /** 拆分：双边 Mint / Skipped 入金 */
+  mintBtcd: number;
+  mintUsdt: number;
+  skipInBtcd: number;
+  skipInUsdt: number;
+  /** 拆分：双边 Burn / Skipped 出金 */
+  burnBtcd: number;
+  burnUsdt: number;
+  skipOutBtcd: number;
+  skipOutUsdt: number;
+}
+
+interface UserSwapAgg {
+  user: string;
+  swapCount: number;
+  btcdVolume: number;
+  usdtVolume: number;
+  /** BTCD→USDT 的 USDT 累计（正贡献） */
+  btcdToUsdtUsdt: number;
+  /** USDT→BTCD 的 USDT 累计（负贡献） */
+  usdtToBtcdUsdt: number;
+  /** 净兑换 USDT = btcdToUsdtUsdt − usdtToBtcdUsdt（兑出 USDT 多为正） */
+  netUsdt: number;
+}
+
+interface UserRankingsFile {
+  provideByBtcd: UserLiquidityFlowAgg[];
+  provideByUsdt: UserLiquidityFlowAgg[];
+  withdrawByBtcd: UserLiquidityFlowAgg[];
+  withdrawByUsdt: UserLiquidityFlowAgg[];
+  swapByUsdt: UserSwapAgg[];
+  swapNetUsdt: UserSwapAgg[];
+  swapNetUsdtBottom: UserSwapAgg[];
+  swapBtcdToUsdt: UserSwapAgg[];
+  swapUsdtToBtcd: UserSwapAgg[];
 }
 
 interface TxFlow {
@@ -765,6 +812,287 @@ function aggregateUserLiquidity(
   return Array.from(map.values());
 }
 
+/**
+ * 提供/取走流动性（含 Skipped 单边）：
+ * 提供 = Mint + skipped In；取走 = Burn + skipped Out
+ */
+function aggregateUserLiquidityFlow(
+  mints: LiquidityRecord[],
+  burns: LiquidityRecord[],
+  skipped: SkippedRecord[]
+): UserLiquidityFlowAgg[] {
+  const map = new Map<string, UserLiquidityFlowAgg>();
+
+  const ensure = (user: string): UserLiquidityFlowAgg => {
+    const key = user || '(unknown)';
+    let agg = map.get(key);
+    if (!agg) {
+      agg = {
+        user: key,
+        provideBtcd: 0,
+        provideUsdt: 0,
+        provideCount: 0,
+        withdrawBtcd: 0,
+        withdrawUsdt: 0,
+        withdrawCount: 0,
+        mintBtcd: 0,
+        mintUsdt: 0,
+        skipInBtcd: 0,
+        skipInUsdt: 0,
+        burnBtcd: 0,
+        burnUsdt: 0,
+        skipOutBtcd: 0,
+        skipOutUsdt: 0
+      };
+      map.set(key, agg);
+    }
+    return agg;
+  };
+
+  for (const m of mints) {
+    const agg = ensure(m.user);
+    const btcd = toNum(m.btcdAmount);
+    const usdt = toNum(m.usdtAmount);
+    agg.mintBtcd += btcd;
+    agg.mintUsdt += usdt;
+    agg.provideBtcd += btcd;
+    agg.provideUsdt += usdt;
+    agg.provideCount += 1;
+  }
+  for (const b of burns) {
+    const agg = ensure(b.user);
+    const btcd = toNum(b.btcdAmount);
+    const usdt = toNum(b.usdtAmount);
+    agg.burnBtcd += btcd;
+    agg.burnUsdt += usdt;
+    agg.withdrawBtcd += btcd;
+    agg.withdrawUsdt += usdt;
+    agg.withdrawCount += 1;
+  }
+  for (const s of skipped) {
+    const bi = toNum(s.btcdIn);
+    const ui = toNum(s.usdtIn);
+    const bo = toNum(s.btcdOut);
+    const uo = toNum(s.usdtOut);
+    if (bi === 0 && ui === 0 && bo === 0 && uo === 0) continue;
+    const agg = ensure(s.user);
+    if (bi > 0 || ui > 0) {
+      agg.skipInBtcd += bi;
+      agg.skipInUsdt += ui;
+      agg.provideBtcd += bi;
+      agg.provideUsdt += ui;
+      agg.provideCount += 1;
+    }
+    if (bo > 0 || uo > 0) {
+      agg.skipOutBtcd += bo;
+      agg.skipOutUsdt += uo;
+      agg.withdrawBtcd += bo;
+      agg.withdrawUsdt += uo;
+      agg.withdrawCount += 1;
+    }
+  }
+
+  return Array.from(map.values());
+}
+
+function aggregateUserSwaps(swaps: SwapRecord[]): UserSwapAgg[] {
+  const map = new Map<string, UserSwapAgg>();
+  for (const sw of swaps) {
+    const key = sw.user || '(unknown)';
+    let agg = map.get(key);
+    if (!agg) {
+      agg = {
+        user: key,
+        swapCount: 0,
+        btcdVolume: 0,
+        usdtVolume: 0,
+        btcdToUsdtUsdt: 0,
+        usdtToBtcdUsdt: 0,
+        netUsdt: 0
+      };
+      map.set(key, agg);
+    }
+    const btcd = toNum(sw.btcdAmount);
+    const usdt = toNum(sw.usdtAmount);
+    agg.swapCount += 1;
+    agg.btcdVolume += btcd;
+    agg.usdtVolume += usdt;
+    if (sw.direction === 'btcd_to_usdt') {
+      agg.btcdToUsdtUsdt += usdt;
+      agg.netUsdt += usdt;
+    } else {
+      agg.usdtToBtcdUsdt += usdt;
+      agg.netUsdt -= usdt;
+    }
+  }
+  return Array.from(map.values());
+}
+
+function printUserFlowRanking(
+  title: string,
+  rows: UserLiquidityFlowAgg[],
+  sortKey: 'provideBtcd' | 'provideUsdt' | 'withdrawBtcd' | 'withdrawUsdt',
+  topN: number
+): UserLiquidityFlowAgg[] {
+  const isProvide = sortKey.startsWith('provide');
+  const top = [...rows]
+    .filter((r) => (isProvide ? r.provideBtcd + r.provideUsdt : r.withdrawBtcd + r.withdrawUsdt) > 0)
+    .sort((a, b) => b[sortKey] - a[sortKey])
+    .slice(0, topN);
+
+  console.log(`\n===== ${title} Top ${top.length} =====`);
+  if (top.length === 0) {
+    console.log('(无)');
+    return top;
+  }
+
+  console.log(
+    '#'.padStart(3) +
+      'BTCD'.padStart(14) +
+      'USDT'.padStart(14) +
+      '笔数'.padStart(6) +
+      '      用户'
+  );
+  top.forEach((a, i) => {
+    const btcd = isProvide ? a.provideBtcd : a.withdrawBtcd;
+    const usdt = isProvide ? a.provideUsdt : a.withdrawUsdt;
+    const count = isProvide ? a.provideCount : a.withdrawCount;
+    console.log(
+      String(i + 1).padStart(3) +
+        formatWithCommas(btcd, 2).padStart(14) +
+        formatWithCommas(usdt, 2).padStart(14) +
+        String(count).padStart(6) +
+        `  ${a.user}`
+    );
+  });
+  return top;
+}
+
+function printTopSwapUsers(
+  swaps: SwapRecord[],
+  topN: number = 20,
+  opts?: { direction?: 'btcd_to_usdt' | 'usdt_to_btcd'; title?: string }
+): UserSwapAgg[] {
+  const filtered = opts?.direction
+    ? swaps.filter((s) => s.direction === opts.direction)
+    : swaps;
+  const top = aggregateUserSwaps(filtered)
+    .sort((a, b) => b.usdtVolume - a.usdtVolume)
+    .slice(0, topN);
+
+  const title = opts?.title || '用户 Swap 总量';
+  console.log(`\n===== ${title} Top ${top.length} =====`);
+  if (top.length === 0) {
+    console.log('(无)');
+    return top;
+  }
+
+  console.log(
+    '#'.padStart(3) +
+      'USDT'.padStart(14) +
+      'BTCD'.padStart(14) +
+      '笔数'.padStart(8) +
+      '      用户'
+  );
+  top.forEach((a, i) => {
+    console.log(
+      String(i + 1).padStart(3) +
+        formatWithCommas(a.usdtVolume, 2).padStart(14) +
+        formatWithCommas(a.btcdVolume, 2).padStart(14) +
+        String(a.swapCount).padStart(8) +
+        `  ${a.user}`
+    );
+  });
+  return top;
+}
+
+/** 净兑换 USDT：BTCD→USDT 为正，USDT→BTCD 为负；ascending=true 为倒数（最负） */
+function printTopSwapNetUsdtUsers(
+  swaps: SwapRecord[],
+  topN: number = 20,
+  ascending: boolean = false
+): UserSwapAgg[] {
+  const top = aggregateUserSwaps(swaps)
+    .sort((a, b) => (ascending ? a.netUsdt - b.netUsdt : b.netUsdt - a.netUsdt))
+    .slice(0, topN);
+
+  const label = ascending ? '倒数 Top' : 'Top';
+  console.log(`\n===== 用户 Swap 净兑换(USDT) ${label} ${top.length} =====`);
+  console.log(`口径: BTCD→USDT 为正，USDT→BTCD 为负；净额=兑出USDT − 兑入USDT`);
+  if (top.length === 0) {
+    console.log('(无)');
+    return top;
+  }
+
+  console.log(
+    '#'.padStart(3) +
+      '净USDT'.padStart(14) +
+      'BTCD→USDT'.padStart(14) +
+      'USDT→BTCD'.padStart(14) +
+      '笔数'.padStart(8) +
+      '      用户'
+  );
+  top.forEach((a, i) => {
+    console.log(
+      String(i + 1).padStart(3) +
+        formatWithCommas(a.netUsdt, 2).padStart(14) +
+        formatWithCommas(a.btcdToUsdtUsdt, 2).padStart(14) +
+        formatWithCommas(a.usdtToBtcdUsdt, 2).padStart(14) +
+        String(a.swapCount).padStart(8) +
+        `  ${a.user}`
+    );
+  });
+  return top;
+}
+
+/** 提供/取走（含 Skipped）+ Swap 用户排行 */
+function printUserRankings(
+  mints: LiquidityRecord[],
+  burns: LiquidityRecord[],
+  skipped: SkippedRecord[],
+  swaps: SwapRecord[],
+  topN: number = 20
+): UserRankingsFile {
+  const flows = aggregateUserLiquidityFlow(mints, burns, skipped);
+  return {
+    provideByBtcd: printUserFlowRanking(
+      '提供流动性(含Skipped单边入金) 按BTCD',
+      flows,
+      'provideBtcd',
+      topN
+    ),
+    provideByUsdt: printUserFlowRanking(
+      '提供流动性(含Skipped单边入金) 按USDT',
+      flows,
+      'provideUsdt',
+      topN
+    ),
+    withdrawByBtcd: printUserFlowRanking(
+      '取走流动性(含Skipped单边出金) 按BTCD',
+      flows,
+      'withdrawBtcd',
+      topN
+    ),
+    withdrawByUsdt: printUserFlowRanking(
+      '取走流动性(含Skipped单边出金) 按USDT',
+      flows,
+      'withdrawUsdt',
+      topN
+    ),
+    swapByUsdt: printTopSwapUsers(swaps, topN),
+    swapNetUsdt: printTopSwapNetUsdtUsers(swaps, 50, false),
+    swapNetUsdtBottom: printTopSwapNetUsdtUsers(swaps, topN, true),
+    swapBtcdToUsdt: printTopSwapUsers(swaps, topN, {
+      direction: 'btcd_to_usdt',
+      title: '用户 Swap BTCD→USDT'
+    }),
+    swapUsdtToBtcd: printTopSwapUsers(swaps, topN, {
+      direction: 'usdt_to_btcd',
+      title: '用户 Swap USDT→BTCD'
+    })
+  };
+}
+
 function toUserLiquidityNet(a: UserLiquidityAgg): UserLiquidityNet {
   const netUsdt = a.mintUsdt - a.burnUsdt;
   const netBtcd = a.mintBtcd - a.burnBtcd;
@@ -1233,6 +1561,7 @@ async function main() {
     const { daily, stats } = computeDailyAndTotals(swaps, mints, burns);
     printTopNetLiquidityUsers(mints, burns, 500);
     const excess = printExcessWithdrawals(mints, burns);
+    printUserRankings(mints, burns, skipped, swaps);
     printSkippedInflows(skipped);
     await printBalanceReconcile(provider, swaps, mints, burns, skipped);
     printTopMintsByUsdt(mints);
@@ -1334,6 +1663,7 @@ async function main() {
   const { daily, stats } = computeDailyAndTotals(swaps, mints, burns);
   printTopNetLiquidityUsers(mints, burns);
   const excess = printExcessWithdrawals(mints, burns);
+  const rankings = printUserRankings(mints, burns, skipped, swaps);
   printSkippedInflows(skipped);
   const reconcile = await printBalanceReconcile(provider, swaps, mints, burns, skipped);
   printTopMintsByUsdt(mints);
@@ -1400,7 +1730,8 @@ async function main() {
       excessUserCount: excess.excessUserCount,
       users: excessUsers
     },
-    balanceReconcile: reconcile
+    balanceReconcile: reconcile,
+    rankings
   };
 
   const outputDir = path.dirname(OUTPUT_FILE);
