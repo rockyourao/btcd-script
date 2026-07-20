@@ -6,12 +6,15 @@
  *   - Swap: 单边转入 + 另一边转出
  *   - Mint(加流动性): 同时转入 BTCD + USDT
  *   - Burn(撤流动性): 同时转出 BTCD + USDT
+ *   - 超额取出: 按用户累计 Burn > Mint 的差额（运营/做市超额提取）
+ *   - Skipped: 未归入以上类别的 Transfer 交易（单边注资/复杂路径等）
+ *   - 对账: Pair 链上余额 vs 隐含余额（Mint−Burn+Swap净[+Skipped净]）
  *
  * 使用方法:
  * npx ts-node btcdUsdtPairStats.ts
  * npx ts-node btcdUsdtPairStats.ts --network pgp-prod
  * npx ts-node btcdUsdtPairStats.ts --no-update
- * npx ts-node btcdUsdtPairStats.ts --rescan-events
+ * npx ts-node btcdUsdtPairStats.ts --rescan-events   # 全量重扫（含 skipped）
  */
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -105,6 +108,20 @@ interface LiquidityRecord {
   transactionHash: string;
 }
 
+/** 未归入 Mint/Burn/Swap 的交易（相对 Pair 的净 Transfer） */
+interface SkippedRecord {
+  user: string;
+  pattern: string;
+  btcdIn: string;
+  btcdOut: string;
+  usdtIn: string;
+  usdtOut: string;
+  blockNumber: number;
+  timestamp: number;
+  timestampStr: string;
+  transactionHash: string;
+}
+
 interface DailyStats {
   date: string;
   timestamp: number;
@@ -138,12 +155,56 @@ interface PairStatsFile {
   burns?: LiquidityRecord[];
 }
 
+interface ExcessWithdrawalUser {
+  user: string;
+  mintBtcd: number;
+  burnBtcd: number;
+  mintUsdt: number;
+  burnUsdt: number;
+  excessBtcd: number;
+  excessUsdt: number;
+  mintCount: number;
+  burnCount: number;
+}
+
+interface ExcessWithdrawalFileStats {
+  burnMinusMintBtcd: number;
+  burnMinusMintUsdt: number;
+  excessBtcd: number;
+  excessUsdt: number;
+  excessUserCount: number;
+  users: ExcessWithdrawalUser[];
+}
+
+interface BalanceReconcileStats {
+  onchainBtcd: number;
+  onchainUsdt: number;
+  impliedBtcd: number;
+  impliedUsdt: number;
+  impliedWithSkippedBtcd: number;
+  impliedWithSkippedUsdt: number;
+  gapBtcd: number;
+  gapUsdt: number;
+  gapWithSkippedBtcd: number;
+  gapWithSkippedUsdt: number;
+  skippedCount: number;
+  skippedBtcdIn: number;
+  skippedBtcdOut: number;
+  skippedUsdtIn: number;
+  skippedUsdtOut: number;
+  skippedBtcdNet: number;
+  skippedUsdtNet: number;
+}
+
 interface LiquidityFile {
   pair: string;
   btcdToken: string;
   usdtToken: string;
   mints: LiquidityRecord[];
   burns: LiquidityRecord[];
+  skipped?: SkippedRecord[];
+  excessWithdrawal?: ExcessWithdrawalFileStats;
+  balanceReconcile?: BalanceReconcileStats;
 }
 
 interface TxFlow {
@@ -296,14 +357,40 @@ function buildTxFlows(btcdLogs: any[], usdtLogs: any[]): Map<string, TxFlow> {
   return flows;
 }
 
+function skippedPattern(
+  hasBtcdIn: boolean,
+  hasBtcdOut: boolean,
+  hasUsdtIn: boolean,
+  hasUsdtOut: boolean
+): string {
+  const parts: string[] = [];
+  if (hasBtcdIn) parts.push('btcdIn');
+  if (hasBtcdOut) parts.push('btcdOut');
+  if (hasUsdtIn) parts.push('usdtIn');
+  if (hasUsdtOut) parts.push('usdtOut');
+  if (parts.length === 0) return 'empty';
+  if (parts.length === 1) {
+    if (hasBtcdIn) return 'btcd_in_only';
+    if (hasUsdtIn) return 'usdt_in_only';
+    if (hasBtcdOut) return 'btcd_out_only';
+    if (hasUsdtOut) return 'usdt_out_only';
+  }
+  return parts.join('+');
+}
+
 function classifyFlows(
   flows: Map<string, TxFlow>,
   blockTimestamps: Map<number, number>
-): { swaps: SwapRecord[]; mints: LiquidityRecord[]; burns: LiquidityRecord[]; skipped: number } {
+): {
+  swaps: SwapRecord[];
+  mints: LiquidityRecord[];
+  burns: LiquidityRecord[];
+  skipped: SkippedRecord[];
+} {
   const swaps: SwapRecord[] = [];
   const mints: LiquidityRecord[] = [];
   const burns: LiquidityRecord[] = [];
-  let skipped = 0;
+  const skipped: SkippedRecord[] = [];
 
   for (const [txHash, f] of flows) {
     const timestamp = blockTimestamps.get(f.blockNumber) || 0;
@@ -366,7 +453,14 @@ function classifyFlows(
       continue;
     }
 
-    skipped += 1;
+    skipped.push({
+      ...base,
+      pattern: skippedPattern(hasBtcdIn, hasBtcdOut, hasUsdtIn, hasUsdtOut),
+      btcdIn: formatAmt(f.btcdIn),
+      btcdOut: formatAmt(f.btcdOut),
+      usdtIn: formatAmt(f.usdtIn),
+      usdtOut: formatAmt(f.usdtOut)
+    });
   }
 
   return { swaps, mints, burns, skipped };
@@ -447,6 +541,8 @@ function computeDailyAndTotals(
     swapCount: daily.reduce((s, d) => s + d.swapCount, 0),
     btcdVolume: daily.reduce((s, d) => s + d.btcdVolume, 0),
     usdtVolume: daily.reduce((s, d) => s + d.usdtVolume, 0),
+    btcdToUsdtVolume: daily.reduce((s, d) => s + d.btcdToUsdtBtcd, 0),
+    usdtToBtcdVolume: daily.reduce((s, d) => s + d.usdtToBtcdUsdt, 0),
     btcdToUsdtCount: daily.reduce((s, d) => s + d.btcdToUsdtCount, 0),
     usdtToBtcdCount: daily.reduce((s, d) => s + d.usdtToBtcdCount, 0),
     mintCount: daily.reduce((s, d) => s + d.mintCount, 0),
@@ -460,14 +556,20 @@ function computeDailyAndTotals(
   return { daily, stats };
 }
 
-function printSummary(daily: DailyStats[], stats: Record<string, number>) {
+function printSummary(
+  daily: DailyStats[],
+  stats: Record<string, number>,
+  excess?: ExcessWithdrawalStats
+) {
   console.log(`\n===== BTCD/USDT 兑换池汇总 =====`);
   console.log(`Pair: ${PAIR_ADDRESS}`);
   console.log(`BTCD: ${BTCD_TOKEN_ADDRESS}`);
   console.log(`USDT: ${USDT_TOKEN_ADDRESS}`);
   console.log(`Swap 笔数: ${formatWithCommas(stats.swapCount, 0)}`);
-  console.log(`  BTCD 成交量: ${formatWithCommas(stats.btcdVolume, 2)}`);
-  console.log(`  USDT 成交量: ${formatWithCommas(stats.usdtVolume, 2)}`);
+  // console.log(`  BTCD 成交量: ${formatWithCommas(stats.btcdVolume, 2)}`);
+  console.log(`  BTCD 成交量: ${formatWithCommas(stats.btcdToUsdtVolume, 2)}`);
+  // console.log(`  USDT 成交量: ${formatWithCommas(stats.usdtVolume, 2)}`);
+  console.log(`  USDT 成交量: ${formatWithCommas(stats.usdtToBtcdVolume, 2)}`);
   console.log(`  BTCD→USDT: ${formatWithCommas(stats.btcdToUsdtCount, 0)} 笔`);
   console.log(`  USDT→BTCD: ${formatWithCommas(stats.usdtToBtcdCount, 0)} 笔`);
   console.log(
@@ -476,6 +578,14 @@ function printSummary(daily: DailyStats[], stats: Record<string, number>) {
   console.log(
     `撤流动性: ${formatWithCommas(stats.burnCount, 0)} 笔 | BTCD ${formatWithCommas(stats.burnBtcd, 2)} | USDT ${formatWithCommas(stats.burnUsdt, 2)}`
   );
+  if (excess) {
+    console.log(
+      `池级 Burn−Mint: BTCD ${formatWithCommas(excess.burnMinusMintBtcd, 2)} | USDT ${formatWithCommas(excess.burnMinusMintUsdt, 2)}`
+    );
+    console.log(
+      `超额取出: ${excess.excessUserCount} 地址 | BTCD ${formatWithCommas(excess.excessBtcd, 2)} | USDT ${formatWithCommas(excess.excessUsdt, 2)}`
+    );
+  }
 
   const recent = daily.slice(-14);
   if (recent.length === 0) {
@@ -487,8 +597,8 @@ function printSummary(daily: DailyStats[], stats: Record<string, number>) {
   console.log(
     '日期'.padEnd(12) +
       'Swap'.padStart(6) +
-      'BTCDVol'.padStart(14) +
-      'USDTVol'.padStart(14) +
+      'BTCDToUsdtVol'.padStart(14) +
+      'USDTToBtcdVol'.padStart(14) +
       'Mint'.padStart(6) +
       'MintUSDT'.padStart(12) +
       'Burn'.padStart(6) +
@@ -498,8 +608,8 @@ function printSummary(daily: DailyStats[], stats: Record<string, number>) {
     console.log(
       d.date.padEnd(12) +
         String(d.swapCount).padStart(6) +
-        formatWithCommas(d.btcdVolume, 2).padStart(14) +
-        formatWithCommas(d.usdtVolume, 2).padStart(14) +
+        formatWithCommas(d.btcdToUsdtBtcd, 2).padStart(14) +
+        formatWithCommas(d.usdtToBtcdUsdt, 2).padStart(14) +
         String(d.mintCount).padStart(6) +
         formatWithCommas(d.mintUsdt, 2).padStart(12) +
         String(d.burnCount).padStart(6) +
@@ -551,22 +661,538 @@ function printTopRecentSwaps(swaps: SwapRecord[], daily: DailyStats[], topN: num
   });
 }
 
-function loadExisting(): Partial<PairStatsFile> & { mints: LiquidityRecord[]; burns: LiquidityRecord[] } | null {
+/** 全部 Swap 按 USDT 金额从大到小取前 N 笔 */
+function printTopSwapsByUsdt(swaps: SwapRecord[], topN: number = 10) {
+  const top = [...swaps]
+    .sort((a, b) => toNum(b.usdtAmount) - toNum(a.usdtAmount))
+    .slice(0, topN);
+
+  console.log(`\n===== 全部 Swap USDT 金额 Top ${top.length} =====`);
+  if (top.length === 0) {
+    console.log('(无)');
+    return;
+  }
+
+  console.log(
+    '#'.padStart(3) +
+      '时间'.padStart(16) +
+      '方向'.padStart(12) +
+      'USDT'.padStart(12) +
+      'BTCD'.padStart(12) +
+      '      用户' +
+      '      Tx'
+  );
+  top.forEach((s, i) => {
+    const dir = s.direction === 'btcd_to_usdt' ? 'BTCD→USDT' : 'USDT→BTCD';
+    console.log(
+      String(i + 1).padStart(3) +
+        (s.timestampStr || '').padStart(22) +
+        dir.padStart(12) +
+        formatWithCommas(s.usdtAmount, 2).padStart(12) +
+        formatWithCommas(s.btcdAmount, 2).padStart(12) +
+        `  ${s.user}` +
+        `  ${s.transactionHash}`
+    );
+  });
+}
+
+interface UserLiquidityAgg {
+  user: string;
+  mintUsdt: number;
+  burnUsdt: number;
+  mintBtcd: number;
+  burnBtcd: number;
+  mintCount: number;
+  burnCount: number;
+}
+
+interface UserLiquidityNet extends UserLiquidityAgg {
+  netUsdt: number;
+  netBtcd: number;
+  /** Burn 超出 Mint 的部分（仅正值） */
+  excessUsdt: number;
+  excessBtcd: number;
+}
+
+interface ExcessWithdrawalStats {
+  /** Burn 总量 − Mint 总量（池级口径，可被仍留在池内的 LP 对冲） */
+  burnMinusMintBtcd: number;
+  burnMinusMintUsdt: number;
+  /** 各用户 max(0, Burn−Mint) 之和：真正的超额取出 */
+  excessBtcd: number;
+  excessUsdt: number;
+  excessUserCount: number;
+  users: UserLiquidityNet[];
+}
+
+function aggregateUserLiquidity(
+  mints: LiquidityRecord[],
+  burns: LiquidityRecord[]
+): UserLiquidityAgg[] {
+  const map = new Map<string, UserLiquidityAgg>();
+
+  const ensure = (user: string): UserLiquidityAgg => {
+    const key = user || '(unknown)';
+    let agg = map.get(key);
+    if (!agg) {
+      agg = {
+        user: key,
+        mintUsdt: 0,
+        burnUsdt: 0,
+        mintBtcd: 0,
+        burnBtcd: 0,
+        mintCount: 0,
+        burnCount: 0
+      };
+      map.set(key, agg);
+    }
+    return agg;
+  };
+
+  for (const m of mints) {
+    const agg = ensure(m.user);
+    agg.mintUsdt += toNum(m.usdtAmount);
+    agg.mintBtcd += toNum(m.btcdAmount);
+    agg.mintCount += 1;
+  }
+  for (const b of burns) {
+    const agg = ensure(b.user);
+    agg.burnUsdt += toNum(b.usdtAmount);
+    agg.burnBtcd += toNum(b.btcdAmount);
+    agg.burnCount += 1;
+  }
+
+  return Array.from(map.values());
+}
+
+function toUserLiquidityNet(a: UserLiquidityAgg): UserLiquidityNet {
+  const netUsdt = a.mintUsdt - a.burnUsdt;
+  const netBtcd = a.mintBtcd - a.burnBtcd;
+  return {
+    ...a,
+    netUsdt,
+    netBtcd,
+    excessUsdt: Math.max(0, -netUsdt),
+    excessBtcd: Math.max(0, -netBtcd)
+  };
+}
+
+/** 超额取出：用户累计 Burn > Mint 的部分（按用户独立计算后加总） */
+function computeExcessWithdrawal(
+  mints: LiquidityRecord[],
+  burns: LiquidityRecord[]
+): ExcessWithdrawalStats {
+  const users = aggregateUserLiquidity(mints, burns).map(toUserLiquidityNet);
+  const mintBtcd = users.reduce((s, u) => s + u.mintBtcd, 0);
+  const mintUsdt = users.reduce((s, u) => s + u.mintUsdt, 0);
+  const burnBtcd = users.reduce((s, u) => s + u.burnBtcd, 0);
+  const burnUsdt = users.reduce((s, u) => s + u.burnUsdt, 0);
+  const excessUsers = users.filter((u) => u.excessBtcd > 0 || u.excessUsdt > 0);
+
+  return {
+    burnMinusMintBtcd: burnBtcd - mintBtcd,
+    burnMinusMintUsdt: burnUsdt - mintUsdt,
+    excessBtcd: excessUsers.reduce((s, u) => s + u.excessBtcd, 0),
+    excessUsdt: excessUsers.reduce((s, u) => s + u.excessUsdt, 0),
+    excessUserCount: excessUsers.length,
+    users
+  };
+}
+
+/** 按用户聚合 Mint - Burn 净流动性，按净 USDT 降序取前 N */
+function printTopNetLiquidityUsers(
+  mints: LiquidityRecord[],
+  burns: LiquidityRecord[],
+  topN: number = 10
+) {
+  const top = aggregateUserLiquidity(mints, burns)
+    .map(toUserLiquidityNet)
+    .sort((a, b) => b.netUsdt - a.netUsdt)
+    .slice(0, topN);
+
+  console.log(`\n===== 用户净流动性 Top ${top.length} (Mint - Burn) =====`);
+  if (top.length === 0) {
+    console.log('(无)');
+    return;
+  }
+
+  console.log(
+    '#'.padStart(3) +
+      '净USDT'.padStart(14) +
+      '净BTCD'.padStart(14) +
+      'Mint'.padStart(6) +
+      'Burn'.padStart(6) +
+      '      用户'
+  );
+  top.forEach((a, i) => {
+    console.log(
+      String(i + 1).padStart(3) +
+        formatWithCommas(a.netUsdt, 2).padStart(14) +
+        formatWithCommas(a.netBtcd, 2).padStart(14) +
+        String(a.mintCount).padStart(6) +
+        String(a.burnCount).padStart(6) +
+        `  ${a.user}`
+    );
+  });
+}
+
+/**
+ * 超额取出：用户 Burn > Mint 的差额。
+ * 池级 Burn−Mint 会被「仍留在池内的 LP」对冲；超额取出按用户独立加总，更能反映运营/做市超额提取。
+ */
+function printExcessWithdrawals(
+  mints: LiquidityRecord[],
+  burns: LiquidityRecord[],
+  topN: number = 10
+): ExcessWithdrawalStats {
+  const stats = computeExcessWithdrawal(mints, burns);
+  const top = [...stats.users]
+    .filter((u) => u.excessBtcd > 0 || u.excessUsdt > 0)
+    .sort((a, b) => b.excessBtcd - a.excessBtcd || b.excessUsdt - a.excessUsdt)
+    .slice(0, topN);
+
+  console.log(`\n===== 超额取出 (Burn > Mint) =====`);
+  console.log(
+    `池级 Burn−Mint: BTCD ${formatWithCommas(stats.burnMinusMintBtcd, 2)} | USDT ${formatWithCommas(stats.burnMinusMintUsdt, 2)}`
+  );
+  console.log(
+    `用户超额合计: BTCD ${formatWithCommas(stats.excessBtcd, 2)} | USDT ${formatWithCommas(stats.excessUsdt, 2)} | ${stats.excessUserCount} 个地址`
+  );
+
+  if (top.length === 0) {
+    console.log('(无超额取出用户)');
+    return stats;
+  }
+
+  console.log(`\n===== 超额取出 Top ${top.length} =====`);
+  console.log(
+    '#'.padStart(3) +
+      '超额BTCD'.padStart(14) +
+      '超额USDT'.padStart(14) +
+      'MintBTCD'.padStart(14) +
+      'BurnBTCD'.padStart(14) +
+      'Mint'.padStart(6) +
+      'Burn'.padStart(6) +
+      '      用户'
+  );
+  top.forEach((a, i) => {
+    console.log(
+      String(i + 1).padStart(3) +
+        formatWithCommas(a.excessBtcd, 2).padStart(14) +
+        formatWithCommas(a.excessUsdt, 2).padStart(14) +
+        formatWithCommas(a.mintBtcd, 2).padStart(14) +
+        formatWithCommas(a.burnBtcd, 2).padStart(14) +
+        String(a.mintCount).padStart(6) +
+        String(a.burnCount).padStart(6) +
+        `  ${a.user}`
+    );
+  });
+
+  return stats;
+}
+
+function printTopLiquidityByUsdt(
+  records: LiquidityRecord[],
+  label: string,
+  topN: number = 10
+) {
+  const top = [...records]
+    .sort((a, b) => toNum(b.usdtAmount) - toNum(a.usdtAmount))
+    .slice(0, topN);
+
+  console.log(`\n===== ${label} USDT 金额 Top ${top.length} =====`);
+  if (top.length === 0) {
+    console.log('(无)');
+    return;
+  }
+
+  console.log(
+    '#'.padStart(3) +
+      '时间'.padStart(16) +
+      'USDT'.padStart(12) +
+      'BTCD'.padStart(12) +
+      '      用户' +
+      '      Tx'
+  );
+  top.forEach((r, i) => {
+    console.log(
+      String(i + 1).padStart(3) +
+        (r.timestampStr || '').padStart(22) +
+        formatWithCommas(r.usdtAmount, 2).padStart(12) +
+        formatWithCommas(r.btcdAmount, 2).padStart(12) +
+        `  ${r.user || '(unknown)'}` +
+        `  ${r.transactionHash}`
+    );
+  });
+}
+
+function printTopMintsByUsdt(mints: LiquidityRecord[], topN: number = 10) {
+  printTopLiquidityByUsdt(mints, 'Mint', topN);
+}
+
+function printTopBurnsByUsdt(burns: LiquidityRecord[], topN: number = 10) {
+  printTopLiquidityByUsdt(burns, 'Burn', topN);
+}
+
+function summarizeSkipped(skipped: SkippedRecord[]) {
+  const byPattern = new Map<string, { count: number; btcdIn: number; btcdOut: number; usdtIn: number; usdtOut: number }>();
+  let btcdIn = 0;
+  let btcdOut = 0;
+  let usdtIn = 0;
+  let usdtOut = 0;
+
+  for (const s of skipped) {
+    const bi = toNum(s.btcdIn);
+    const bo = toNum(s.btcdOut);
+    const ui = toNum(s.usdtIn);
+    const uo = toNum(s.usdtOut);
+    btcdIn += bi;
+    btcdOut += bo;
+    usdtIn += ui;
+    usdtOut += uo;
+    let p = byPattern.get(s.pattern);
+    if (!p) {
+      p = { count: 0, btcdIn: 0, btcdOut: 0, usdtIn: 0, usdtOut: 0 };
+      byPattern.set(s.pattern, p);
+    }
+    p.count += 1;
+    p.btcdIn += bi;
+    p.btcdOut += bo;
+    p.usdtIn += ui;
+    p.usdtOut += uo;
+  }
+
+  return {
+    count: skipped.length,
+    btcdIn,
+    btcdOut,
+    usdtIn,
+    usdtOut,
+    btcdNet: btcdIn - btcdOut,
+    usdtNet: usdtIn - usdtOut,
+    byPattern
+  };
+}
+
+/** 隐含余额 = Mint − Burn + Swap净流入（可选 + Skipped净流入） */
+function computeImpliedBalances(
+  swaps: SwapRecord[],
+  mints: LiquidityRecord[],
+  burns: LiquidityRecord[],
+  skipped: SkippedRecord[]
+) {
+  const mintBtcd = mints.reduce((s, m) => s + toNum(m.btcdAmount), 0);
+  const mintUsdt = mints.reduce((s, m) => s + toNum(m.usdtAmount), 0);
+  const burnBtcd = burns.reduce((s, b) => s + toNum(b.btcdAmount), 0);
+  const burnUsdt = burns.reduce((s, b) => s + toNum(b.usdtAmount), 0);
+
+  let swapBtcdIn = 0;
+  let swapBtcdOut = 0;
+  let swapUsdtIn = 0;
+  let swapUsdtOut = 0;
+  for (const sw of swaps) {
+    if (sw.direction === 'btcd_to_usdt') {
+      swapBtcdIn += toNum(sw.btcdAmount);
+      swapUsdtOut += toNum(sw.usdtAmount);
+    } else {
+      swapUsdtIn += toNum(sw.usdtAmount);
+      swapBtcdOut += toNum(sw.btcdAmount);
+    }
+  }
+
+  const skip = summarizeSkipped(skipped);
+  const impliedBtcd = mintBtcd - burnBtcd + swapBtcdIn - swapBtcdOut;
+  const impliedUsdt = mintUsdt - burnUsdt + swapUsdtIn - swapUsdtOut;
+
+  return {
+    mintBtcd,
+    mintUsdt,
+    burnBtcd,
+    burnUsdt,
+    swapBtcdIn,
+    swapBtcdOut,
+    swapUsdtIn,
+    swapUsdtOut,
+    swapBtcdNet: swapBtcdIn - swapBtcdOut,
+    swapUsdtNet: swapUsdtIn - swapUsdtOut,
+    skipped: skip,
+    impliedBtcd,
+    impliedUsdt,
+    impliedWithSkippedBtcd: impliedBtcd + skip.btcdNet,
+    impliedWithSkippedUsdt: impliedUsdt + skip.usdtNet
+  };
+}
+
+async function fetchPairOnchainBalances(provider: any): Promise<{ btcd: number; usdt: number }> {
+  const erc20Abi = ['function balanceOf(address) view returns (uint256)'];
+  const btcd = new ethers.Contract(BTCD_TOKEN_ADDRESS, erc20Abi, provider);
+  const usdt = new ethers.Contract(USDT_TOKEN_ADDRESS, erc20Abi, provider);
+  const [btcdRaw, usdtRaw] = await Promise.all([
+    btcd.balanceOf(PAIR_ADDRESS),
+    usdt.balanceOf(PAIR_ADDRESS)
+  ]);
+  return {
+    btcd: toNum(formatAmt(btcdRaw)),
+    usdt: toNum(formatAmt(usdtRaw))
+  };
+}
+
+function printSkippedInflows(skipped: SkippedRecord[], topN: number = 15) {
+  const sum = summarizeSkipped(skipped);
+  console.log(`\n===== Skipped 入金/出金汇总 (${sum.count} 笔) =====`);
+  if (sum.count === 0) {
+    console.log('(无 skipped；若刚升级脚本请用 --rescan-events 全量重扫)');
+    return sum;
+  }
+
+  console.log(
+    `BTCD 入 ${formatWithCommas(sum.btcdIn, 2)} / 出 ${formatWithCommas(sum.btcdOut, 2)} / 净 ${formatWithCommas(sum.btcdNet, 2)}`
+  );
+  console.log(
+    `USDT 入 ${formatWithCommas(sum.usdtIn, 2)} / 出 ${formatWithCommas(sum.usdtOut, 2)} / 净 ${formatWithCommas(sum.usdtNet, 2)}`
+  );
+
+  console.log('\n按 pattern:');
+  const patterns = Array.from(sum.byPattern.entries()).sort(
+    (a, b) => b[1].btcdIn + b[1].usdtIn - (a[1].btcdIn + a[1].usdtIn)
+  );
+  for (const [pattern, p] of patterns) {
+    console.log(
+      `  ${pattern.padEnd(28)} ${String(p.count).padStart(5)} 笔` +
+        ` | BTCD净 ${formatWithCommas(p.btcdIn - p.btcdOut, 2).padStart(14)}` +
+        ` | USDT净 ${formatWithCommas(p.usdtIn - p.usdtOut, 2).padStart(14)}` +
+        ` | 入BTCD ${formatWithCommas(p.btcdIn, 2).padStart(12)}` +
+        ` 入USDT ${formatWithCommas(p.usdtIn, 2).padStart(12)}`
+    );
+  }
+
+  const inflowish = [...skipped]
+    .filter((s) => toNum(s.btcdIn) + toNum(s.usdtIn) > 0)
+    .sort(
+      (a, b) =>
+        toNum(b.btcdIn) + toNum(b.usdtIn) - (toNum(a.btcdIn) + toNum(a.usdtIn))
+    )
+    .slice(0, topN);
+
+  if (inflowish.length > 0) {
+    console.log(`\n===== Skipped 入金金额 Top ${inflowish.length} =====`);
+    console.log(
+      '#'.padStart(3) +
+        '时间'.padStart(16) +
+        'pattern'.padStart(22) +
+        'BTCD入'.padStart(12) +
+        'USDT入'.padStart(12) +
+        'BTCD出'.padStart(12) +
+        'USDT出'.padStart(12) +
+        '      用户'
+    );
+    inflowish.forEach((s, i) => {
+      console.log(
+        String(i + 1).padStart(3) +
+          (s.timestampStr || '').padStart(22) +
+          s.pattern.padStart(22) +
+          formatWithCommas(s.btcdIn, 2).padStart(12) +
+          formatWithCommas(s.usdtIn, 2).padStart(12) +
+          formatWithCommas(s.btcdOut, 2).padStart(12) +
+          formatWithCommas(s.usdtOut, 2).padStart(12) +
+          `  ${s.user || '(unknown)'}  ${s.transactionHash}`
+      );
+    });
+  }
+
+  return sum;
+}
+
+async function printBalanceReconcile(
+  provider: any,
+  swaps: SwapRecord[],
+  mints: LiquidityRecord[],
+  burns: LiquidityRecord[],
+  skipped: SkippedRecord[]
+): Promise<BalanceReconcileStats> {
+  const implied = computeImpliedBalances(swaps, mints, burns, skipped);
+  const onchain = await fetchPairOnchainBalances(provider);
+
+  const gapBtcd = onchain.btcd - implied.impliedBtcd;
+  const gapUsdt = onchain.usdt - implied.impliedUsdt;
+  const gapWithSkippedBtcd = onchain.btcd - implied.impliedWithSkippedBtcd;
+  const gapWithSkippedUsdt = onchain.usdt - implied.impliedWithSkippedUsdt;
+
+  console.log(`\n===== Pair 余额对账 =====`);
+  console.log(
+    `链上余额:     BTCD ${formatWithCommas(onchain.btcd, 2)} | USDT ${formatWithCommas(onchain.usdt, 2)}`
+  );
+  console.log(
+    `隐含(分类内): BTCD ${formatWithCommas(implied.impliedBtcd, 2)} | USDT ${formatWithCommas(implied.impliedUsdt, 2)}` +
+      `  (= Mint−Burn+Swap净)`
+  );
+  console.log(
+    `缺口(链上−隐含): BTCD ${formatWithCommas(gapBtcd, 2)} | USDT ${formatWithCommas(gapUsdt, 2)}`
+  );
+  console.log(
+    `隐含(+Skipped): BTCD ${formatWithCommas(implied.impliedWithSkippedBtcd, 2)} | USDT ${formatWithCommas(implied.impliedWithSkippedUsdt, 2)}`
+  );
+  console.log(
+    `缺口(+Skipped后): BTCD ${formatWithCommas(gapWithSkippedBtcd, 2)} | USDT ${formatWithCommas(gapWithSkippedUsdt, 2)}`
+  );
+  console.log(
+    `分解: Mint BTCD ${formatWithCommas(implied.mintBtcd, 2)} − Burn ${formatWithCommas(implied.burnBtcd, 2)}` +
+      ` + Swap净 ${formatWithCommas(implied.swapBtcdNet, 2)}` +
+      ` + Skipped净 ${formatWithCommas(implied.skipped.btcdNet, 2)}`
+  );
+  console.log(
+    `      Mint USDT ${formatWithCommas(implied.mintUsdt, 2)} − Burn ${formatWithCommas(implied.burnUsdt, 2)}` +
+      ` + Swap净 ${formatWithCommas(implied.swapUsdtNet, 2)}` +
+      ` + Skipped净 ${formatWithCommas(implied.skipped.usdtNet, 2)}`
+  );
+
+  if (skipped.length === 0) {
+    console.log(`提示: 无 skipped 明细时「+Skipped」与分类内相同；请用 --rescan-events 全量重建`);
+  }
+
+  return {
+    onchainBtcd: onchain.btcd,
+    onchainUsdt: onchain.usdt,
+    impliedBtcd: implied.impliedBtcd,
+    impliedUsdt: implied.impliedUsdt,
+    impliedWithSkippedBtcd: implied.impliedWithSkippedBtcd,
+    impliedWithSkippedUsdt: implied.impliedWithSkippedUsdt,
+    gapBtcd,
+    gapUsdt,
+    gapWithSkippedBtcd,
+    gapWithSkippedUsdt,
+    skippedCount: implied.skipped.count,
+    skippedBtcdIn: implied.skipped.btcdIn,
+    skippedBtcdOut: implied.skipped.btcdOut,
+    skippedUsdtIn: implied.skipped.usdtIn,
+    skippedUsdtOut: implied.skipped.usdtOut,
+    skippedBtcdNet: implied.skipped.btcdNet,
+    skippedUsdtNet: implied.skipped.usdtNet
+  };
+}
+
+function loadExisting(): Partial<PairStatsFile> & {
+  mints: LiquidityRecord[];
+  burns: LiquidityRecord[];
+  skipped: SkippedRecord[];
+} | null {
   if (!fs.existsSync(OUTPUT_FILE)) return null;
   try {
     const data = JSON.parse(fs.readFileSync(OUTPUT_FILE, 'utf-8')) as PairStatsFile;
     let mints = data.mints || [];
     let burns = data.burns || [];
+    let skipped: SkippedRecord[] = [];
     if (fs.existsSync(LIQUIDITY_OUTPUT_FILE)) {
       try {
         const liq = JSON.parse(fs.readFileSync(LIQUIDITY_OUTPUT_FILE, 'utf-8')) as LiquidityFile;
         if (Array.isArray(liq.mints)) mints = liq.mints;
         if (Array.isArray(liq.burns)) burns = liq.burns;
+        if (Array.isArray(liq.skipped)) skipped = liq.skipped;
       } catch {
         // 流动性文件损坏时回退主文件内嵌数据
       }
     }
-    return { ...data, mints, burns };
+    return { ...data, mints, burns, skipped };
   } catch {
     return null;
   }
@@ -587,6 +1213,7 @@ async function main() {
   let swaps: SwapRecord[] = [];
   let mints: LiquidityRecord[] = [];
   let burns: LiquidityRecord[] = [];
+  let skipped: SkippedRecord[] = [];
   let lastBlock = 0;
 
   if (!update) {
@@ -601,9 +1228,17 @@ async function main() {
     swaps = existing.swaps || [];
     mints = existing.mints || [];
     burns = existing.burns || [];
+    skipped = existing.skipped || [];
     lastBlock = existing.lastBlock || 0;
     const { daily, stats } = computeDailyAndTotals(swaps, mints, burns);
-    printSummary(daily, stats);
+    printTopNetLiquidityUsers(mints, burns, 500);
+    const excess = printExcessWithdrawals(mints, burns);
+    printSkippedInflows(skipped);
+    await printBalanceReconcile(provider, swaps, mints, burns, skipped);
+    printTopMintsByUsdt(mints);
+    printTopBurnsByUsdt(burns);
+    printTopSwapsByUsdt(swaps);
+    printSummary(daily, stats, excess);
     printTopRecentSwaps(swaps, daily);
     console.log(`\n--no-update：未写入 ${OUTPUT_FILE} / ${LIQUIDITY_OUTPUT_FILE}`);
     return;
@@ -616,18 +1251,24 @@ async function main() {
   let existingSwaps: SwapRecord[] = [];
   let existingMints: LiquidityRecord[] = [];
   let existingBurns: LiquidityRecord[] = [];
+  let existingSkipped: SkippedRecord[] = [];
   let startBlock = INITIAL_START_BLOCK;
 
   if (existing && !rescanEvents) {
     existingSwaps = existing.swaps || [];
     existingMints = existing.mints || [];
     existingBurns = existing.burns || [];
+    existingSkipped = existing.skipped || [];
     if (typeof existing.lastBlock === 'number' && existing.lastBlock >= INITIAL_START_BLOCK) {
       startBlock = existing.lastBlock + 1;
     }
     console.log(
-      `增量模式：已有 Swap ${existingSwaps.length} / Mint ${existingMints.length} / Burn ${existingBurns.length}，从区块 ${startBlock} 继续`
+      `增量模式：已有 Swap ${existingSwaps.length} / Mint ${existingMints.length} / Burn ${existingBurns.length}` +
+        ` / Skipped ${existingSkipped.length}，从区块 ${startBlock} 继续`
     );
+    if (existingSkipped.length === 0) {
+      console.log(`提示: 尚无 skipped 历史，建议加 --rescan-events 全量重扫以重建对账数据`);
+    }
   } else if (rescanEvents) {
     console.log(`--rescan-events：从 start_block ${INITIAL_START_BLOCK} 全量重扫`);
     startBlock = INITIAL_START_BLOCK;
@@ -638,6 +1279,7 @@ async function main() {
     swaps = existingSwaps;
     mints = existingMints;
     burns = existingBurns;
+    skipped = existingSkipped;
     lastBlock = existing?.lastBlock || currentBlock;
   } else {
     console.log(`\n并行拉取 BTCD / USDT Transfer (涉及 Pair)...`);
@@ -669,24 +1311,35 @@ async function main() {
 
     const decoded = classifyFlows(flows, blockTimestamps);
     console.log(
-      `分类: Swap ${decoded.swaps.length}, Mint ${decoded.mints.length}, Burn ${decoded.burns.length}, 跳过 ${decoded.skipped}`
+      `分类: Swap ${decoded.swaps.length}, Mint ${decoded.mints.length}, Burn ${decoded.burns.length}, Skipped ${decoded.skipped.length}`
     );
 
     if (rescanEvents) {
       swaps = decoded.swaps;
       mints = decoded.mints;
       burns = decoded.burns;
+      skipped = decoded.skipped;
     } else {
       swaps = mergeByTxHash(existingSwaps, decoded.swaps);
       mints = mergeByTxHash(existingMints, decoded.mints);
       burns = mergeByTxHash(existingBurns, decoded.burns);
+      skipped = mergeByTxHash(existingSkipped, decoded.skipped);
     }
     lastBlock = currentBlock;
-    console.log(`合并后: Swap ${swaps.length}, Mint ${mints.length}, Burn ${burns.length}`);
+    console.log(
+      `合并后: Swap ${swaps.length}, Mint ${mints.length}, Burn ${burns.length}, Skipped ${skipped.length}`
+    );
   }
 
   const { daily, stats } = computeDailyAndTotals(swaps, mints, burns);
-  printSummary(daily, stats);
+  printTopNetLiquidityUsers(mints, burns);
+  const excess = printExcessWithdrawals(mints, burns);
+  printSkippedInflows(skipped);
+  const reconcile = await printBalanceReconcile(provider, swaps, mints, burns, skipped);
+  printTopMintsByUsdt(mints);
+  printTopBurnsByUsdt(burns);
+  printTopSwapsByUsdt(swaps);
+  printSummary(daily, stats, excess);
   printTopRecentSwaps(swaps, daily);
 
   const output: PairStatsFile = {
@@ -694,17 +1347,60 @@ async function main() {
     pair: PAIR_ADDRESS,
     btcdToken: BTCD_TOKEN_ADDRESS,
     usdtToken: USDT_TOKEN_ADDRESS,
-    stats,
+    stats: {
+      ...stats,
+      burnMinusMintBtcd: excess.burnMinusMintBtcd,
+      burnMinusMintUsdt: excess.burnMinusMintUsdt,
+      excessBtcd: excess.excessBtcd,
+      excessUsdt: excess.excessUsdt,
+      excessUserCount: excess.excessUserCount,
+      onchainBtcd: reconcile.onchainBtcd,
+      onchainUsdt: reconcile.onchainUsdt,
+      impliedBtcd: reconcile.impliedBtcd,
+      impliedUsdt: reconcile.impliedUsdt,
+      impliedWithSkippedBtcd: reconcile.impliedWithSkippedBtcd,
+      impliedWithSkippedUsdt: reconcile.impliedWithSkippedUsdt,
+      gapBtcd: reconcile.gapBtcd,
+      gapUsdt: reconcile.gapUsdt,
+      skippedCount: reconcile.skippedCount,
+      skippedBtcdNet: reconcile.skippedBtcdNet,
+      skippedUsdtNet: reconcile.skippedUsdtNet
+    },
     daily,
     swaps
   };
+
+  const excessUsers = excess.users
+    .filter((u) => u.excessBtcd > 0 || u.excessUsdt > 0)
+    .sort((a, b) => b.excessBtcd - a.excessBtcd || b.excessUsdt - a.excessUsdt)
+    .map((u) => ({
+      user: u.user,
+      mintBtcd: u.mintBtcd,
+      burnBtcd: u.burnBtcd,
+      mintUsdt: u.mintUsdt,
+      burnUsdt: u.burnUsdt,
+      excessBtcd: u.excessBtcd,
+      excessUsdt: u.excessUsdt,
+      mintCount: u.mintCount,
+      burnCount: u.burnCount
+    }));
 
   const liquidityOutput: LiquidityFile = {
     pair: PAIR_ADDRESS,
     btcdToken: BTCD_TOKEN_ADDRESS,
     usdtToken: USDT_TOKEN_ADDRESS,
     mints,
-    burns
+    burns,
+    skipped,
+    excessWithdrawal: {
+      burnMinusMintBtcd: excess.burnMinusMintBtcd,
+      burnMinusMintUsdt: excess.burnMinusMintUsdt,
+      excessBtcd: excess.excessBtcd,
+      excessUsdt: excess.excessUsdt,
+      excessUserCount: excess.excessUserCount,
+      users: excessUsers
+    },
+    balanceReconcile: reconcile
   };
 
   const outputDir = path.dirname(OUTPUT_FILE);
