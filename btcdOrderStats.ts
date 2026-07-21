@@ -110,7 +110,10 @@ const OrderStatusNames: { [key: number]: string } = {
   6: 'LENDER_PROOF_SUBMITTED',
   7: 'LENDER_PAYMENT_CONFIRMED',
   8: 'ARBITRATION_REQUESTED',
-  9: 'CLOSED'
+  9: 'CLOSED',
+  10: 'TIMEOUT_REPAYMENT',
+  11: 'RENEWAL_ORDER_REQUESTED',
+  12: 'INCREASE_ORDER_REQUESTED'
 };
 
 interface OrderRecord {
@@ -211,6 +214,8 @@ interface OrderDetails {
   timeoutRepayerBtcAddress: string; // 超时还款时付款方 BTC 地址
   timeoutRepayTime: number;    // 超时还款时间（链上时间戳，秒）
   timeoutRepayTimeStr: string;
+  renwalRequestTime: number;   // 续期请求时间（链上时间戳，秒；ABI 拼写为 renwal）
+  renwalRequestTimeStr: string;
   interestValue: string;       // 与订单 tokenAmount 同币、同处理：formatEther(interestValue())
   interestValueRaw: string;   // 与 tokenAmountRaw 一致：链上 uint256 字符串
 }
@@ -315,6 +320,7 @@ async function fetchOrderDetailsWithMulticall(
     'timeoutRepayer',
     'timeoutRepayerBtcAddress',
     'timeoutRepayTime',
+    'renwalRequestTime',
     'interestValue'
   ];
 
@@ -368,6 +374,7 @@ async function fetchOrderDetailsWithMulticall(
             const timeoutRepayerResult = results[resultIdx++];
             const timeoutRepayerBtcAddressResult = results[resultIdx++];
             const timeoutRepayTimeResult = results[resultIdx++];
+            const renwalRequestTimeResult = results[resultIdx++];
             const interestValueResult = results[resultIdx++];
 
             // 解码各个字段
@@ -409,6 +416,9 @@ async function fetchOrderDetailsWithMulticall(
               : '';
             const timeoutRepayTime = timeoutRepayTimeResult.success
               ? uint256ToSafeNumber(orderInterface.decodeFunctionResult('timeoutRepayTime', timeoutRepayTimeResult.returnData)[0])
+              : 0;
+            const renwalRequestTime = renwalRequestTimeResult.success
+              ? uint256ToSafeNumber(orderInterface.decodeFunctionResult('renwalRequestTime', renwalRequestTimeResult.returnData)[0])
               : 0;
             let interestValue = '0';
             let interestValueRaw = '0';
@@ -521,6 +531,8 @@ async function fetchOrderDetailsWithMulticall(
               timeoutRepayerBtcAddress,
               timeoutRepayTime,
               timeoutRepayTimeStr: timestampToStr(timeoutRepayTime),
+              renwalRequestTime,
+              renwalRequestTimeStr: timestampToStr(renwalRequestTime),
               interestValue,
               interestValueRaw
             });
