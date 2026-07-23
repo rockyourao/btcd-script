@@ -1567,8 +1567,8 @@ async function main() {
     printTopMintsByUsdt(mints);
     printTopBurnsByUsdt(burns);
     printTopSwapsByUsdt(swaps);
-    printSummary(daily, stats, excess);
     printTopRecentSwaps(swaps, daily);
+    printSummary(daily, stats, excess);
     console.log(`\n--no-update：未写入 ${OUTPUT_FILE} / ${LIQUIDITY_OUTPUT_FILE}`);
     return;
   }
@@ -1669,8 +1669,11 @@ async function main() {
   printTopMintsByUsdt(mints);
   printTopBurnsByUsdt(burns);
   printTopSwapsByUsdt(swaps);
-  printSummary(daily, stats, excess);
   printTopRecentSwaps(swaps, daily);
+  printSummary(daily, stats, excess);
+  console.log(
+    `\nPair (${PAIR_ADDRESS}) USDT 余额: ${formatWithCommas(reconcile.onchainUsdt, 2)}, BTCD 余额: ${formatWithCommas(reconcile.onchainBtcd, 2)}`
+  );
 
   const output: PairStatsFile = {
     lastBlock,

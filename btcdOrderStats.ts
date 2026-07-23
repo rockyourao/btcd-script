@@ -1771,7 +1771,7 @@ async function main() {
     console.log(`\n过期排行 Top10 (EVM 用户 borrower):`);
     overdueRankBorrowerTop10.forEach((item, i) => {
       console.log(
-        `  ${i + 1}. ${item.address} 过期订单数: ${item.count}, ` +
+        `  ${(i + 1).toString().padStart(2, ' ')}. ${item.address} 过期订单数: ${item.count}, ` +
           `BTCD: ${formatWithCommas(item.totalTokenAmount, 2)}, ` +
           `质押BTC: ${formatWithCommas(item.totalRealBtcAmount, 4)} BTC`
       );
@@ -1781,7 +1781,7 @@ async function main() {
     console.log(`\n过期排行 Top10 (BTC 用户 borrowerBtcAddress):`);
     overdueRankBtcTop10.forEach((item, i) => {
       console.log(
-        `  ${i + 1}. ${item.address} 过期订单数: ${item.count}, ` +
+        `  ${(i + 1).toString().padStart(2, ' ')}. ${item.address} 过期订单数: ${item.count}, ` +
           `BTCD: ${formatWithCommas(item.totalTokenAmount, 2)}, ` +
           `质押BTC: ${formatWithCommas(item.totalRealBtcAmount, 4)} BTC`
       );
@@ -1791,7 +1791,7 @@ async function main() {
     console.log(`\n过期排行 Top10 (质押的 BTC):`);
     overdueRankBtcAmountTop10.forEach((item, i) => {
       console.log(
-        `  ${i + 1}. ${item.address} 过期订单数: ${item.count}, ` +
+        `  ${(i + 1).toString().padStart(2, ' ')}. ${item.address} 过期订单数: ${item.count}, ` +
           `BTCD: ${formatWithCommas(item.totalTokenAmount, 2)}, ` +
           `质押BTC: ${formatWithCommas(item.totalRealBtcAmount, 4)} BTC`
       );
@@ -1800,7 +1800,7 @@ async function main() {
   // console.log(`\n===== 所有订单质押 BTC 排行 Top10 =====`);
   // const collateralRankTop10 = allRecords.sort((a, b) => parseFloat(b.details?.realBtcAmount) - parseFloat(a.details?.realBtcAmount)).slice(0, 10);
   // collateralRankTop10.forEach((item, i) => {
-  //   console.log(`  ${i + 1}. 订单ID: ${item.orderId}, 质押BTC: ${formatWithCommas(item.details?.realBtcAmount, 2)} BTC, ${formatWithCommas(item.tokenAmount, 2)} BTCD, BTC地址: ${item.details?.borrowerBtcAddress}
+  //   console.log(`  ${(i + 1).toString().padStart(2, ' ')}. 订单ID: ${item.orderId}, 质押BTC: ${formatWithCommas(item.details?.realBtcAmount, 2)} BTC, ${formatWithCommas(item.tokenAmount, 2)} BTCD, BTC地址: ${item.details?.borrowerBtcAddress}
   //   订单BTC地址: ${item.details?.lenderBtcAddress} EVM地址: ${item.details?.borrower} ${item.details.statusName}
   //   `);
   // });
@@ -1808,7 +1808,7 @@ async function main() {
   console.log(`\n===== 已借出订单质押 BTC 排行 Top10 =====`);
   const borrowedCollateralRankTop10 = allRecords.filter(r => r.details?.status === OrderStatus.BORROWED).sort((a, b) => parseFloat(b.details?.realBtcAmount) - parseFloat(a.details?.realBtcAmount)).slice(0, 10);
   borrowedCollateralRankTop10.forEach((item, i) => {
-    console.log(`  ${i + 1}. 订单ID: ${item.orderId}, 质押BTC: ${formatWithCommas(item.details?.realBtcAmount, 2)} BTC, ${formatWithCommas(item.tokenAmount, 2)} BTCD, BTC地址: ${item.details?.borrowerBtcAddress}
+    console.log(`  ${(i + 1).toString().padStart(2, ' ')}. 订单ID: ${item.orderId}, 质押BTC: ${formatWithCommas(item.details?.realBtcAmount, 2)} BTC, ${formatWithCommas(item.tokenAmount, 2)} BTCD, BTC地址: ${item.details?.borrowerBtcAddress}
     订单BTC地址: ${item.details?.lenderBtcAddress} EVM地址: ${item.details?.borrower}
     BTC 价格: ${formatWithCommas(item.btcPrice, 2)}, 截止日期: ${timestampToStr(item.details?.deadLinesData?.repayDeadLine)}
     `);
@@ -1822,7 +1822,7 @@ async function main() {
     return acc;
   }, new Map<string, number>()).entries()).sort((a, b) => b[1] - a[1]).slice(0, 10);
   collateralRankByBtcAddressTop10.forEach((item, i) => {
-    console.log(`  ${i + 1}. ${item[0]} 质押BTC: ${formatWithCommas(item[1], 2)} BTC`);
+    console.log(`  ${(i + 1).toString().padStart(2, ' ')}. ${item[0]} 质押BTC: ${formatWithCommas(item[1], 2)} BTC`);
   });
 
   console.log(`\n===== 已借出订单中 质押 BTC 总和的 BTC 地址排行 Top20 =====`);
@@ -1833,14 +1833,14 @@ async function main() {
     return acc;
   }, new Map<string, number>()).entries()).sort((a, b) => b[1] - a[1]).slice(0, 20);
   borrowedCollateralRankByBtcAddressTop10.forEach((item, i) => {
-    console.log(`  ${i + 1}. ${item[0]} 质押BTC: ${formatWithCommas(item[1], 2)} BTC`);
+    console.log(`  ${(i + 1).toString().padStart(2, ' ')}. ${item[0]} 质押BTC: ${formatWithCommas(item[1], 2)} BTC`);
   });
 
   console.log(`\n===== 最近还款订单 =====`)
   const btcdRepaidOrdersList = allRecords.filter(r => r.details?.borrowerRepaidTime > 0).sort((a, b) => b.details?.borrowerRepaidTime - a.details?.borrowerRepaidTime);
   const btcdRepaidOrdersTop10 = btcdRepaidOrdersList.slice(0, 10);
   btcdRepaidOrdersTop10.forEach((item, i) => {
-    console.log(`  ${i + 1}. ${item.orderId} 还款时间: ${item.details?.borrowerRepaidTimeStr}, BTCD数量: ${formatWithCommas(item.tokenAmount, 2)} BTC 价格: ${formatWithCommas(item.btcPrice, 2)} 版本: ${item.details?.orderVersion}`);
+    console.log(`  ${(i + 1).toString().padStart(2, ' ')}. ${item.orderId} 还款时间: ${item.details?.borrowerRepaidTimeStr}, BTCD数量: ${formatWithCommas(item.tokenAmount, 2).padStart(9, ' ')} BTC 价格: ${formatWithCommas(item.btcPrice, 2)} 版本: ${item.details?.orderVersion}`);
   });
 
   console.log(`\n===== 最近逾期订单 =====`)
@@ -1853,14 +1853,14 @@ async function main() {
   ).sort((a, b) => b.details?.deadLinesData?.repayDeadLine - a.details?.deadLinesData?.repayDeadLine);
   const overdueOrdersTop10 = overdueOrders.slice(0, 10);
   overdueOrdersTop10.forEach((item, i) => {
-    console.log(`  ${i + 1}. ${item.orderId} 还款时间: ${timestampToStr(item.details?.deadLinesData?.repayDeadLine)}, BTCD数量: ${formatWithCommas(item.tokenAmount, 2)} BTC 价格: ${formatWithCommas(item.btcPrice, 2)} 版本: ${item.details?.orderVersion}`);
+    console.log(`  ${(i + 1).toString().padStart(2, ' ')}. ${item.orderId} 还款时间: ${timestampToStr(item.details?.deadLinesData?.repayDeadLine)}, BTCD数量: ${formatWithCommas(item.tokenAmount, 2).padStart(9, ' ')} BTC 价格: ${formatWithCommas(item.btcPrice, 2)} 版本: ${item.details?.orderVersion}`);
   });
 
   console.log(`\n===== 最近将要逾期的订单 =====`)
   const toOverdueOrdersList = allRecords.filter(r => r.details?.status === OrderStatus.BORROWED && r.details?.deadLinesData?.repayDeadLine > nowTimestamp).sort((a, b) => a.details?.deadLinesData?.repayDeadLine - b.details?.deadLinesData?.repayDeadLine);
   const toOverdueOrdersTop20 = toOverdueOrdersList.slice(0, 10);
   toOverdueOrdersTop20.forEach((item, i) => {
-    console.log(`  ${i + 1}. ${item.orderId} 还款时间: ${timestampToStr(item.details?.deadLinesData?.repayDeadLine)}, BTCD数量: ${formatWithCommas(item.tokenAmount, 2)} BTC 价格: ${formatWithCommas(item.btcPrice, 2)} 版本: ${item.details?.orderVersion}`);
+    console.log(`  ${(i + 1).toString().padStart(2, ' ')}. ${item.orderId} 还款时间: ${timestampToStr(item.details?.deadLinesData?.repayDeadLine)}, BTCD数量: ${formatWithCommas(item.tokenAmount, 2).padStart(9, ' ')} BTC 价格: ${formatWithCommas(item.btcPrice, 2)} 版本: ${item.details?.orderVersion}`);
   });
 
   // 列出所有过期订单中，关闭时间小于订单的proofTimestamp+limitedDays*86400的订单
@@ -1989,9 +1989,9 @@ async function main() {
   console.log(`  订单数: ${formatWithCommas(stats.currentBorrowed.count, 0)}`);
   console.log(`  抵押 BTC: ${formatWithCommas(stats.currentBorrowed.collateral, 8)} BTC，若全部使用Discount: ${formatWithCommas(stats.currentBorrowed.collateralDiscount, 8)} BTC`);
   console.log(`  BTCD 数量: ${formatWithCommas(stats.currentBorrowed.tokenAmount, 2)}`);
-  console.log(`  orderVersion<2 抵押 BTC: ${formatWithCommas(stats.currentBorrowed.orderVersion1.collateral, 4)} BTC， BTCD 数量: ${formatWithCommas(stats.currentBorrowed.orderVersion1.tokenAmount, 2)}`);
-  console.log(`  orderVersion=2 抵押 BTC: ${formatWithCommas(stats.currentBorrowed.orderVersion2.collateral, 4)} BTC， BTCD 数量: ${formatWithCommas(stats.currentBorrowed.orderVersion2.tokenAmount, 2)}`);
-  console.log(`  orderVersion>2 抵押 BTC: ${formatWithCommas(stats.currentBorrowed.orderVersionGt2.collateral, 4)} BTC， BTCD 数量: ${formatWithCommas(stats.currentBorrowed.orderVersionGt2.tokenAmount, 2)}`);
+  console.log(`  orderVersion < 2 抵押 BTC: ${formatWithCommas(stats.currentBorrowed.orderVersion1.collateral, 4)} BTC， BTCD 数量: ${formatWithCommas(stats.currentBorrowed.orderVersion1.tokenAmount, 2).padStart(12, ' ')}`);
+  console.log(`  orderVersion = 2 抵押 BTC: ${formatWithCommas(stats.currentBorrowed.orderVersion2.collateral, 4)} BTC， BTCD 数量: ${formatWithCommas(stats.currentBorrowed.orderVersion2.tokenAmount, 2).padStart(12, ' ')}`);
+  console.log(`  orderVersion > 2 抵押 BTC: ${formatWithCommas(stats.currentBorrowed.orderVersionGt2.collateral, 4)} BTC， BTCD 数量: ${formatWithCommas(stats.currentBorrowed.orderVersionGt2.tokenAmount, 2).padStart(12, ' ')}`);
 
   const borrowedLargeCollateralOrders = allRecords.filter(
     r => r.details?.status === OrderStatus.BORROWED && parseFloat(r.details?.realBtcAmount || '0') > 0.8
