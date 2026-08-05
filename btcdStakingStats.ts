@@ -26,6 +26,8 @@ function getNetworkFromArgs(): string {
 
 const network = getNetworkFromArgs();
 
+const nativeTokenSymbol = network === 'pgp-prod' ? 'PGA' : 'ELA';
+
 // 从 networks.json 加载配置
 const networkConfig = require('./networks.json');
 const STAKING_FACTORY_ADDRESS = networkConfig[network].staking_factory_address;
@@ -339,10 +341,31 @@ async function fetchAllStakingEventsFast(
   return allEvents;
 }
 
+const erc20SymbolAbi = ['function symbol() view returns (string)'];
+
 /**
- * 从 StakingFactory 获取 Token1 和 Token2 地址
+ * 读取标准 ERC20 token 的 symbol
  */
-async function getStakingTokenAddresses(provider: any): Promise<{ token1: string; token2: string }> {
+async function getErc20Symbol(provider: any, tokenAddress: string): Promise<string> {
+  if (!tokenAddress || tokenAddress === ethers.constants.AddressZero) return '';
+  try {
+    const token = new ethers.Contract(tokenAddress, erc20SymbolAbi, provider);
+    return await token.symbol();
+  } catch (error) {
+    console.error(`获取 Token symbol 失败 (${tokenAddress}):`, error);
+    return '';
+  }
+}
+
+/**
+ * 从 StakingFactory 获取 Token1 和 Token2 地址及 symbol
+ */
+async function getStakingTokenAddresses(provider: any): Promise<{
+  token1: string;
+  token2: string;
+  token1Symbol: string;
+  token2Symbol: string;
+}> {
   const factoryContract = new ethers.Contract(STAKING_FACTORY_ADDRESS, stakingFactoryAbi, provider);
 
   try {
@@ -350,13 +373,21 @@ async function getStakingTokenAddresses(provider: any): Promise<{ token1: string
       factoryContract.stakingToken1(),
       factoryContract.stakingToken2()
     ]);
+    const token1Addr = token1.toLowerCase();
+    const token2Addr = token2.toLowerCase();
+    const [token1Symbol, token2Symbol] = await Promise.all([
+      getErc20Symbol(provider, token1Addr),
+      getErc20Symbol(provider, token2Addr)
+    ]);
     return {
-      token1: token1.toLowerCase(),
-      token2: token2.toLowerCase()
+      token1: token1Addr,
+      token2: token2Addr,
+      token1Symbol,
+      token2Symbol
     };
   } catch (error) {
     console.error('获取 Staking Token 地址失败:', error);
-    return { token1: '', token2: '' };
+    return { token1: '', token2: '', token1Symbol: '', token2Symbol: '' };
   }
 }
 
@@ -791,16 +822,13 @@ async function main() {
   const allRecords = Array.from(existingRecordsMap.values());
   allRecords.sort((a, b) => a.blockNumber - b.blockNumber);
 
-  // 4. 获取 Staking Token 地址
-  let stakingTokens = { token1: ethers.constants.AddressZero, token2: ethers.constants.AddressZero };
-  if (!noUpdate) {
-    console.log(`\n获取 Staking Token 地址...`);
-    stakingTokens = await getStakingTokenAddresses(provider);
-    console.log(`Token1: ${stakingTokens.token1}`);
-    console.log(`Token2: ${stakingTokens.token2}`);
-  } else {
-    console.log(`\n跳过：Staking Token 地址查询 (--no-update)`);
-  }
+  // 4. 获取 Staking Token 地址及 symbol（打印标签需要，--no-update 也查询）
+  console.log(`\n获取 Staking Token 地址...`);
+  const stakingTokens = await getStakingTokenAddresses(provider);
+  const token1Symbol = stakingTokens.token1Symbol || 'Token1';
+  const token2Symbol = stakingTokens.token2Symbol || 'Token2';
+  console.log(`${token1Symbol}: ${stakingTokens.token1}`);
+  console.log(`${token2Symbol}: ${stakingTokens.token2}`);
 
   // 5. 获取事件（增量更新）
   const stakingContracts = allRecords.map(r => r.stakingContract);
@@ -1094,7 +1122,7 @@ async function main() {
 
   console.log(`\n===== Staking 统计 =====`);
   console.log(`总 Staking 合约数: ${formatWithCommas(stats.totalStakingContracts, 0)}`);
-  console.log(`活跃 Staking 数: ${formatWithCommas(stats.activeStakings, 0)}`);
+  console.log(`活跃  Staking  数: ${formatWithCommas(stats.activeStakings, 0)}`);
   console.log(`已到期 Staking 数: ${formatWithCommas(stats.expiredStakings, 0)}`);
   console.log(`\n===== Staking 事件统计 =====`);
   console.log(`  总事件数: ${formatWithCommas(stats.totalEvents, 0)}`);
@@ -1112,17 +1140,17 @@ async function main() {
   }
 
   console.log(`\n===== 当前已质押总量 =====`);
-  console.log(`  Native Token: ${formatWithCommas(stats.totalActiveEth, 8)}`);
-  console.log(`  Token1: ${formatWithCommas(stats.totalActiveToken1, 4)}`);
-  console.log(`  Token2: ${formatWithCommas(stats.totalActiveToken2, 4)}`);
+  console.log(`  ${nativeTokenSymbol.padStart(4, ' ')}: ${formatWithCommas(stats.totalActiveEth, 2).padStart(13, ' ')}`);
+  console.log(`  ${token1Symbol.padStart(4, ' ')}: ${formatWithCommas(stats.totalActiveToken1, 2).padStart(13, ' ')}`);
+  console.log(`  ${token2Symbol.padStart(4, ' ')}: ${formatWithCommas(stats.totalActiveToken2, 2).padStart(13, ' ')}`);
   console.log(`\n===== 已过期质押总量 =====`);
-  console.log(`  Native Token: ${formatWithCommas(stats.totalExpiredEth, 8)}`);
-  console.log(`  Token1: ${formatWithCommas(stats.totalExpiredToken1, 4)}`);
-  console.log(`  Token2: ${formatWithCommas(stats.totalExpiredToken2, 4)}`);
+  console.log(`  ${nativeTokenSymbol.padStart(4, ' ')}: ${formatWithCommas(stats.totalExpiredEth, 2).padStart(13, ' ')}`);
+  console.log(`  ${token1Symbol.padStart(4, ' ')}: ${formatWithCommas(stats.totalExpiredToken1, 2).padStart(13, ' ')}`);
+  console.log(`  ${token2Symbol.padStart(4, ' ')}: ${formatWithCommas(stats.totalExpiredToken2, 2).padStart(13, ' ') }`);
   console.log(`\n===== 历史累计质押总量 =====`);
-  console.log(`  Native Token: ${formatWithCommas(stats.totalEth, 8)}`);
-  console.log(`  Token1: ${formatWithCommas(stats.totalToken1, 4)}`);
-  console.log(`  Token2: ${formatWithCommas(stats.totalToken2, 4)}`);
+  console.log(`  ${nativeTokenSymbol.padStart(4, ' ')}: ${formatWithCommas(stats.totalEth, 2).padStart(13, ' ')}`);
+  console.log(`  ${token1Symbol.padStart(4, ' ')}: ${formatWithCommas(stats.totalToken1, 2).padStart(13, ' ')}`);
+  console.log(`  ${token2Symbol.padStart(4, ' ')}: ${formatWithCommas(stats.totalToken2, 2).padStart(13, ' ')}`);
 
   console.log(`\n===== 质押截止日期（倒序 Top 10） =====`);
   const formatEndUtcDateHour = (tsSec: number): string => {
@@ -1146,7 +1174,41 @@ async function main() {
       const t1 = parseFloat(d.token1Amount || '0');
       const t2 = parseFloat(d.token2Amount || '0');
       console.log(
-        `  ${i + 1}. ${r.stakingContract} 截止: ${formatEndUtcDateHour(d.endTime)} | Native ${formatWithCommas(eth, 0)} | Token1 ${formatWithCommas(t1, 0)} | Token2 ${formatWithCommas(t2, 0)}`
+        `  ${(i + 1).toString().padStart(2, ' ')}. ${r.stakingContract} 截止: ${formatEndUtcDateHour(d.endTime)} | ${nativeTokenSymbol} ${formatWithCommas(eth, 0).padStart(5, ' ')} | ${token1Symbol} ${formatWithCommas(t1, 0).padStart(5, ' ')} | ${token2Symbol} ${formatWithCommas(t2, 0).padStart(5, ' ')}`
+      );
+    });
+  }
+
+  console.log(`\n===== 质押 ${token1Symbol}（Top 20） =====`);
+  const top10ByToken1 = [...activeStakings]
+    .filter((r) => parseFloat(r.details?.token1Amount || '0') > 0)
+    .sort((a, b) => parseFloat(b.details!.token1Amount || '0') - parseFloat(a.details!.token1Amount || '0'))
+    .slice(0, 20);
+  if (top10ByToken1.length === 0) {
+    console.log(`  （无质押 ${token1Symbol} 的活跃质押）`);
+  } else {
+    top10ByToken1.forEach((r, i) => {
+      const d = r.details!;
+      const t1 = parseFloat(d.token1Amount || '0');
+      console.log(
+        `  ${(i + 1).toString().padStart(2, ' ')}. ${r.stakingContract} | ${r.user} | ${token1Symbol} ${formatWithCommas(t1, 2).padStart(12, ' ')} | 截止: ${formatEndUtcDateHour(d.endTime)}`
+      );
+    });
+  }
+
+  console.log(`\n===== 质押 ${token2Symbol}（Top 20） =====`);
+  const top10ByToken2 = [...activeStakings]
+    .filter((r) => parseFloat(r.details?.token2Amount || '0') > 0)
+    .sort((a, b) => parseFloat(b.details!.token2Amount || '0') - parseFloat(a.details!.token2Amount || '0'))
+    .slice(0, 20);
+  if (top10ByToken2.length === 0) {
+    console.log(`  （无质押 ${token2Symbol} 的活跃质押）`);
+  } else {
+    top10ByToken2.forEach((r, i) => {
+      const d = r.details!;
+      const t2 = parseFloat(d.token2Amount || '0');
+      console.log(
+        `  ${(i + 1).toString().padStart(2, ' ')}. ${r.stakingContract} | ${r.user} | ${token2Symbol} ${formatWithCommas(t2, 2).padStart(12, ' ')} | 截止: ${formatEndUtcDateHour(d.endTime)}`
       );
     });
   }

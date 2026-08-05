@@ -25,7 +25,7 @@
     "issuer_btc_address": "1AEXQ6Gtu61bXPZnuQPXtJhXoEkTXCfYfH",
     "arbitratorManager": "0x1f739Ce4238FF2B06D79D802Cb196aaE2025eae0",
     "start_block": 13329,
-    "batch_size": 10000,
+    "batch_size": 20000,
     "180order_start_time": 1769843920,
     "btcd_usdt_pair_address": "0xFF60725F03531DCeE7f91d731cd002Fc78aB497F",
     "btcd_usdt_token_address": "0xdF72788af68E7902F61377D246Dd502b0b383385"
