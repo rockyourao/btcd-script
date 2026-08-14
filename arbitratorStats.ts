@@ -579,7 +579,7 @@ async function main() {
   if (lowBalanceRecords.length > 0) {
     console.log(`\n===== 低余额守护者Top10(余额 < ${LOW_BALANCE_THRESHOLD_ETH} 按余额升序）=====`);
     lowBalanceRecords.slice(0, 10).forEach((r, i) => {
-      console.log(`  ${i + 1}. ${r.arbitrator}  余额: ${r.balance}`);
+      console.log(`  ${(i + 1).toString().padStart(2, ' ')}. ${r.arbitrator}  余额: ${r.balance}`);
     });
   }
 

@@ -1,5 +1,5 @@
 /**
- * 获取 BTCD(ERC20 Token) 的所有 Transfer 事件
+ * 获取 BTCD(ERC20 Token) 的所有 Mint 和 Burn 事件
  *
  * 使用方法:
  * npx ts-node getBTCDTransfers.ts

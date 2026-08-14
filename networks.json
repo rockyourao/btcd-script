@@ -43,5 +43,19 @@
     "arbitratorManager": "0xA476D275a355d2695B674524fF50E313387526a0",
     "start_block": 31457532,
     "batch_size": 50000
+  },
+  "bsc-testnet": {
+    "rpc_url": "https://bsc-testnet.btcdtech.app",
+    "loan_contractaddress": "0x607fDBdcc2F8a7aceBe92322417BB40cdA832251",
+    "issuer_contractaddress": "0xF82C8DBdDF0eace3479e2e865307F7120310d2fd",
+    "stable_coin_contractaddress": "0xF14bcae7db732BfFC8ef4d9970fe763e3f7aF43E",
+    "staking_factory_address": "0x1747F6314c7fB84214866b7C3074df481dfF613F",
+    "stakingToken1_decimals": 18,
+    "stakingToken2_decimals": 18,
+    "multicall3": "0x1dA463289aE42D35E2BaB1280c10dE90d4972DE3",
+    "issuer_btc_address": "1AEXQ6Gtu61bXPZnuQPXtJhXoEkTXCfYfH",
+    "arbitratorManager": "0xcB80BF5CD924479aa13Bff07Ae259C07d152f401",
+    "start_block": 123103243,
+    "batch_size": 50000
   }
 }
